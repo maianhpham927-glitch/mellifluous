@@ -214,8 +214,8 @@ export async function commitGithubDataFile(
       };
     }
 
-    const repo = (config.repo || DEFAULT_REPO).trim();
-    const branch = (config.branch || DEFAULT_BRANCH).trim();
+    const repo = (config.repo || DEFAULT_REPO).trim().replace(/^\/+|\/+$/g, '');
+    const branch = (config.branch || DEFAULT_BRANCH).trim().replace(/^\/+|\/+$/g, '');
     const path = `data/${filename}`;
     const apiUrl = `https://api.github.com/repos/${repo}/contents/${path}`;
 
@@ -226,32 +226,61 @@ export async function commitGithubDataFile(
     };
 
     // Helper to query the guaranteed freshest file SHA directly from GitHub
-    const fetchLatestSha = async (): Promise<{ sha?: string; notFound?: boolean; unauthorized?: boolean }> => {
+    const fetchLatestSha = async (): Promise<{
+      sha?: string;
+      notFound?: boolean;
+      unauthorized?: boolean;
+      error?: string;
+    }> => {
       try {
         const cacheBuster = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        const getUrl = `${apiUrl}?ref=${encodeURIComponent(branch)}&_cb=${cacheBuster}`;
+        const getUrl = `${apiUrl}?ref=${encodeURIComponent(branch)}&_t=${cacheBuster}`;
         const getRes = await fetch(getUrl, {
-          headers: {
-            ...headers,
-            'If-None-Match': '',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-          },
-          cache: 'no-store',
+          headers,
         });
+
         if (getRes.ok) {
           const fileInfo = await getRes.json();
-          return { sha: fileInfo.sha };
+          if (fileInfo && typeof fileInfo.sha === 'string') {
+            return { sha: fileInfo.sha };
+          }
         }
+
         if (getRes.status === 404) {
+          const errJson = await getRes.json().catch(() => ({}));
+          const msg = (errJson.message || '').toLowerCase();
+          if (msg.includes('no commit found for the ref') || msg.includes('branch')) {
+            return {
+              error: `Không tìm thấy nhánh "${branch}" trên repository "${repo}". Vui lòng kiểm tra lại cấu hình tên nhánh.`,
+            };
+          }
           return { notFound: true };
         }
+
         if (getRes.status === 401) {
-          return { unauthorized: true };
+          return {
+            unauthorized: true,
+            error: 'GitHub Token không hợp lệ hoặc đã hết hạn (HTTP 401 Bad Credentials).',
+          };
         }
-      } catch (e) {
+
+        if (getRes.status === 403) {
+          const errJson = await getRes.json().catch(() => ({}));
+          return {
+            error: `GitHub Token không có quyền truy cập hoặc vượt quá giới hạn API (HTTP 403: ${errJson.message || ''}).`,
+          };
+        }
+
+        const errJson = await getRes.json().catch(() => ({}));
+        return {
+          error: `Không thể đọc thông tin tệp trên GitHub (HTTP ${getRes.status}: ${errJson.message || ''})`,
+        };
+      } catch (e: any) {
         console.warn('[GitHubSync] Error fetching latest file SHA:', e);
+        return {
+          error: `Lỗi kết nối khi kiểm tra tệp trên GitHub: ${e?.message || 'Không thể kết nối mạng'}`,
+        };
       }
-      return {};
     };
 
     try {
@@ -262,12 +291,29 @@ export async function commitGithubDataFile(
       let lastErrorMessage = '';
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        // 1. Fetch fresh SHA with cache busting
+        // 1. Fetch fresh SHA with clean cache-busting query parameter
         const shaResult = await fetchLatestSha();
+
         if (shaResult.unauthorized) {
           return {
             success: false,
-            error: 'GitHub Token không hợp lệ hoặc đã hết hạn (HTTP 401 Bad Credentials).',
+            error: shaResult.error || 'GitHub Token không hợp lệ hoặc đã hết hạn (HTTP 401 Bad Credentials).',
+          };
+        }
+
+        // If there was an error querying GitHub (e.g. branch doesn't exist, permission issue, network failure)
+        if (shaResult.error) {
+          return {
+            success: false,
+            error: shaResult.error,
+          };
+        }
+
+        // If SHA wasn't found and it's NOT a 404 (file doesn't exist), abort rather than sending broken PUT without sha
+        if (!shaResult.sha && !shaResult.notFound) {
+          return {
+            success: false,
+            error: 'Không thể xác thực mã phiên bản tệp (SHA) trên GitHub. Vui lòng thử lại.',
           };
         }
 
@@ -300,17 +346,19 @@ export async function commitGithubDataFile(
           };
         }
 
-        // 3. Handle conflict (HTTP 409) with auto-retry
-        if (putRes.status === 409 && attempt < maxRetries) {
-          console.warn(`[GitHubSync] SHA 409 conflict for ${filename}. Retrying with fresh SHA (attempt ${attempt + 1}/${maxRetries})...`);
-          const delay = 350 * (attempt + 1) + Math.floor(Math.random() * 200);
+        const errorJson = await putRes.json().catch(() => ({}));
+        const rawErrMsg = errorJson.message || '';
+
+        // 3. Handle conflict (HTTP 409) OR unexpected 422 "sha wasn't supplied" with auto-retry
+        if ((putRes.status === 409 || (putRes.status === 422 && rawErrMsg.includes('sha'))) && attempt < maxRetries) {
+          console.warn(`[GitHubSync] Retrying commit for ${filename} (HTTP ${putRes.status}: ${rawErrMsg}) - attempt ${attempt + 1}/${maxRetries}...`);
+          const delay = 400 * (attempt + 1) + Math.floor(Math.random() * 200);
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
 
-        // 4. If not recoverable or exhausted retries, format informative error
-        const errorJson = await putRes.json().catch(() => ({}));
-        let errorMsg = errorJson.message || `Lỗi GitHub API: HTTP ${putRes.status}`;
+        // 4. Format informative error
+        let errorMsg = rawErrMsg || `Lỗi GitHub API: HTTP ${putRes.status}`;
         if (putRes.status === 404) {
           errorMsg = `Không tìm thấy repository "${repo}" hoặc Token không có quyền truy cập repository này (HTTP 404).`;
         } else if (putRes.status === 401) {
@@ -318,9 +366,9 @@ export async function commitGithubDataFile(
         } else if (putRes.status === 409) {
           errorMsg = `Xung đột phiên bản tệp SHA trên GitHub (HTTP 409) sau ${attempt + 1} lần thử. Vui lòng bấm lưu lại lần nữa.`;
         } else if (putRes.status === 403) {
-          errorMsg = `Token không có quyền ghi ("Contents: Read and write") vào kho lưu trữ (HTTP 403).`;
+          errorMsg = `Token không có quyền ghi ("Contents: Read and write") vào kho lưu trữ (HTTP 403: ${rawErrMsg}).`;
         } else if (putRes.status === 422) {
-          errorMsg = `Lỗi định dạng commit hoặc nhánh "${branch}" không tồn tại (HTTP 422: ${errorJson.message || ''}).`;
+          errorMsg = `Lỗi định dạng commit hoặc nhánh "${branch}" không hợp lệ (HTTP 422: ${rawErrMsg}).`;
         }
         lastErrorMessage = errorMsg;
         break;
