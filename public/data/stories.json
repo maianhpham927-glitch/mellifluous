@@ -1,5 +1,31 @@
 [
   {
+    "id": "chao-tiep-ha",
+    "title": "chào tiếp ha",
+    "originalTitle": "",
+    "author": "hees loooo",
+    "translator": "Mellifluous",
+    "status": "ongoing",
+    "genre": [
+      "Học đường",
+      "Gương vỡ lại lành"
+    ],
+    "summary": "nj",
+    "totalChapters": 30,
+    "completedChapters": 0,
+    "mainChaptersCount": 30,
+    "extraChaptersCount": 0,
+    "coverImage": "https://images.unsplash.com/photo-1522383225653-ed111181a951?q=80&w=800&auto=format&fit=crop",
+    "colorTheme": "from-pink-100 to-rose-200 dark:from-pink-950/40 dark:to-rose-900/40",
+    "hasPassword": false,
+    "passwordHint": "",
+    "passwordKey": "",
+    "updatedAt": "2026-09-17T14:32:22.973Z",
+    "views": 0,
+    "likes": 0,
+    "featured": true
+  },
+  {
     "id": "anh-dao-nam-centimet",
     "title": "Anh Đào Rơi Vừa Đúng Năm Centimet",
     "originalTitle": "五厘米的樱花雨",
@@ -22,7 +48,7 @@
     "hasPassword": true,
     "passwordHint": "Tốc độ rơi của cánh hoa anh đào (viết tắt không dấu: 5cms)",
     "passwordKey": "5cms",
-    "updatedAt": "Vừa đăng",
+    "updatedAt": "14/09/2026",
     "views": 0,
     "likes": 0,
     "featured": true
