@@ -9,7 +9,7 @@
 import { db, doc, setDoc, deleteDoc, onSnapshot, collection, isFirestoreQuotaExhausted } from '../lib/firebase';
 import { saveAudioBlobToIDB, getAudioBlobFromIDB, deleteAudioBlobFromIDB } from './audioIndexedDB';
 import { buildApiUrl, hasBackendServer } from '../lib/apiConfig';
-import { fetchRawGithubJson } from '../lib/githubSyncService';
+import { fetchRawGithubJson, commitGithubDataFile, getGithubConfig } from '../lib/githubSyncService';
 import {
   uploadAudioToFirestore,
   downloadAudioFromFirestore,
@@ -1087,6 +1087,14 @@ class BackgroundMusicEngine {
       console.warn('Error saving track to Firestore:', err);
     }
 
+    // Background sync playlist.json to GitHub repository
+    try {
+      const ghConfig = getGithubConfig();
+      if (ghConfig.token && ghConfig.autoSync) {
+        commitGithubDataFile('playlist.json', this.tracks, `Thêm bài hát: ${newTrack.title} [skip ci]`).catch(() => {});
+      }
+    } catch {}
+
     return newTrack;
   }
 
@@ -1131,6 +1139,15 @@ class BackgroundMusicEngine {
     } catch (err) {
       console.warn('Error updating track in Firestore:', err);
     }
+
+    // Background sync playlist.json to GitHub repository
+    try {
+      const ghConfig = getGithubConfig();
+      if (ghConfig.token && ghConfig.autoSync) {
+        commitGithubDataFile('playlist.json', this.tracks, `Cập nhật bài hát ID: ${trackId} [skip ci]`).catch(() => {});
+      }
+    } catch {}
+
     return true;
   }
 
@@ -1183,6 +1200,14 @@ class BackgroundMusicEngine {
     } catch (err) {
       console.warn('Error removing track from Firestore:', err);
     }
+
+    // Background sync playlist.json to GitHub repository
+    try {
+      const ghConfig = getGithubConfig();
+      if (ghConfig.token && ghConfig.autoSync) {
+        commitGithubDataFile('playlist.json', this.tracks, `Xóa bài hát ID: ${trackId} [skip ci]`).catch(() => {});
+      }
+    } catch {}
 
     return true;
   }

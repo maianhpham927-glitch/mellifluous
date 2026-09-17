@@ -170,8 +170,8 @@ export const mergeChapters = (base: Chapter[], incoming: Chapter[]): Chapter[] =
     } else {
       const existingTime = parseSafeTimestamp(existing.updatedAt || existing.publishedAt);
       const incomingTime = parseSafeTimestamp(ch.updatedAt || ch.publishedAt);
-      // Incoming takes precedence unless existing is strictly newer and verified
-      if (existingTime > incomingTime && incomingTime > 0) {
+      // If existing local chapter is newer or equal (e.g. freshly edited locally), retain existing edits
+      if (existingTime >= incomingTime && existingTime > 0) {
         map.set(key, { ...ch, ...existing });
       } else {
         map.set(key, { ...existing, ...ch });
@@ -2264,24 +2264,50 @@ export const subscribeToPublishedStories = (
         } catch {}
 
         const cleanIncoming = incoming.filter((s) => !localDel.has(s.id) && !LEGACY_MOCK_STORY_IDS.has(s.id));
-        if (cleanIncoming.length === 0) return;
+        if (cleanIncoming.length === 0 && current.length === 0) return;
 
-        const updatedList: Story[] = [];
-        for (const s of cleanIncoming) {
-          const existing = currentMap.get(s.id);
-          if (!existing) {
-            updatedList.push(s);
-          } else {
-            updatedList.push({
-              ...existing,
-              ...s,
-              views: Math.max(Number(existing.views) || 0, Number(s.views) || 0),
-              likes: Math.max(Number(existing.likes) || 0, Number(s.likes) || 0),
-              completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(s.completedChapters) || 0),
-            });
+        // Merge: retain all valid local author-created stories not yet on remote, and merge remote updates
+        const mergedMap = new Map<string, Story>();
+
+        // 1. Seed with local stored stories (so newly published local stories are NEVER dropped)
+        for (const s of current) {
+          if (!localDel.has(s.id) && !LEGACY_MOCK_STORY_IDS.has(s.id)) {
+            mergedMap.set(s.id, s);
           }
         }
 
+        // 2. Merge incoming remote stories with smart timestamp resolution
+        for (const inc of cleanIncoming) {
+          const existing = mergedMap.get(inc.id);
+          if (!existing) {
+            mergedMap.set(inc.id, inc);
+          } else {
+            const existingTime = parseSafeTimestamp(existing.updatedAt);
+            const incTime = parseSafeTimestamp(inc.updatedAt);
+
+            if (existingTime > incTime && incTime > 0) {
+              // Local version is newer (author just edited it), preserve local edits while taking max metrics
+              mergedMap.set(inc.id, {
+                ...inc,
+                ...existing,
+                views: Math.max(Number(existing.views) || 0, Number(inc.views) || 0),
+                likes: Math.max(Number(existing.likes) || 0, Number(inc.likes) || 0),
+                completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(inc.completedChapters) || 0),
+              });
+            } else {
+              // Remote version is newer or equal
+              mergedMap.set(inc.id, {
+                ...existing,
+                ...inc,
+                views: Math.max(Number(existing.views) || 0, Number(inc.views) || 0),
+                likes: Math.max(Number(existing.likes) || 0, Number(inc.likes) || 0),
+                completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(inc.completedChapters) || 0),
+              });
+            }
+          }
+        }
+
+        const updatedList: Story[] = Array.from(mergedMap.values());
         try {
           localStorage.setItem('mel_published_stories', JSON.stringify(updatedList));
         } catch {}
@@ -3303,24 +3329,41 @@ export const subscribeToAnnouncements = (
   // 3. Immediately pull from Server API with GitHub Raw fallback
   let pollAnnInterval: any = null;
   if (typeof window !== 'undefined') {
+    const applyIncomingAnnouncements = (incoming: Announcement[]) => {
+      if (!Array.isArray(incoming) || incoming.length === 0) return;
+      const current = getStoredAnnouncements();
+      const map = new Map<string, Announcement>();
+      // Keep all local announcements
+      current.forEach((a) => map.set(a.id, a));
+      // Add or update from incoming
+      incoming.forEach((a) => {
+        if (!map.has(a.id)) {
+          map.set(a.id, a);
+        } else {
+          const ex = map.get(a.id)!;
+          map.set(a.id, { ...ex, ...a });
+        }
+      });
+      const merged = Array.from(map.values());
+      try {
+        localStorage.setItem('mel_announcements', JSON.stringify(merged));
+      } catch {}
+      callback(merged);
+      notifyAnnouncementSubscribers(merged);
+    };
+
     const syncAnnouncements = () => {
       if (hasBackendServer()) {
         fetch(buildApiUrl('/api/announcements'))
           .then((res) => (res.ok ? res.json() : null))
           .then((serverAnn) => {
             if (Array.isArray(serverAnn) && serverAnn.length > 0) {
-              try {
-                localStorage.setItem('mel_announcements', JSON.stringify(serverAnn));
-              } catch {}
-              callback(serverAnn);
+              applyIncomingAnnouncements(serverAnn);
             } else {
               fetchRawGithubJson<Announcement[]>('announcements.json')
                 .then((ghAnn) => {
                   if (Array.isArray(ghAnn) && ghAnn.length > 0) {
-                    try {
-                      localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
-                    } catch {}
-                    callback(ghAnn);
+                    applyIncomingAnnouncements(ghAnn);
                   }
                 })
                 .catch(() => {});
@@ -3330,10 +3373,7 @@ export const subscribeToAnnouncements = (
             fetchRawGithubJson<Announcement[]>('announcements.json')
               .then((ghAnn) => {
                 if (Array.isArray(ghAnn) && ghAnn.length > 0) {
-                  try {
-                    localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
-                  } catch {}
-                  callback(ghAnn);
+                  applyIncomingAnnouncements(ghAnn);
                 }
               })
               .catch(() => {});
@@ -3342,10 +3382,7 @@ export const subscribeToAnnouncements = (
         fetchRawGithubJson<Announcement[]>('announcements.json')
           .then((ghAnn) => {
             if (Array.isArray(ghAnn) && ghAnn.length > 0) {
-              try {
-                localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
-              } catch {}
-              callback(ghAnn);
+              applyIncomingAnnouncements(ghAnn);
             }
           })
           .catch(() => {});

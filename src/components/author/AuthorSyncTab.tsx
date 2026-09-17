@@ -48,6 +48,7 @@ import {
 } from '../../lib/firebase';
 import { getApiBaseUrl, buildApiUrl, hasBackendServer, isStaticHosting, saveCustomBackendUrl } from '../../lib/apiConfig';
 import { Story, Chapter, Announcement } from '../../types';
+import { bgmEngine, AudioTrack } from '../../utils/audioPlayer';
 
 interface AuthorSyncTabProps {
   onFeedback: (type: 'success' | 'error', text: string) => void;
@@ -217,7 +218,11 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
       // 3. Announcements
       await commitGithubDataFile('announcements.json', announcements, 'Đồng bộ thông báo [skip ci]');
 
-      onFeedback('success', 'Đã đồng bộ thành công toàn bộ Truyện, Chương và Thông báo lên GitHub repository!');
+      // 4. Playlist
+      const playlist = bgmEngine.getTracks();
+      await commitGithubDataFile('playlist.json', playlist, 'Đồng bộ danh sách nhạc nền [skip ci]');
+
+      onFeedback('success', 'Đã đồng bộ thành công toàn bộ Truyện, Chương, Thông báo và Nhạc nền lên GitHub repository!');
     } catch (err: any) {
       onFeedback('error', err?.message || 'Có lỗi xảy ra khi đẩy dữ liệu lên GitHub');
     } finally {
@@ -229,10 +234,11 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
   const handlePullFromGithub = async () => {
     setIsPullingFromGithub(true);
     try {
-      const [remoteStories, remoteChapters, remoteAnnouncements] = await Promise.all([
+      const [remoteStories, remoteChapters, remoteAnnouncements, remotePlaylist] = await Promise.all([
         fetchRawGithubJson<Story[]>('stories.json'),
         fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json'),
         fetchRawGithubJson<Announcement[]>('announcements.json'),
+        fetchRawGithubJson<AudioTrack[]>('playlist.json'),
       ]);
 
       let updatedCount = 0;
@@ -251,6 +257,10 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
 
       if (Array.isArray(remoteAnnouncements) && remoteAnnouncements.length > 0) {
         localStorage.setItem('mel_published_announcements', JSON.stringify(remoteAnnouncements));
+      }
+
+      if (Array.isArray(remotePlaylist) && remotePlaylist.length > 0) {
+        bgmEngine.mergeTracks(remotePlaylist);
       }
 
       onFeedback('success', `Đã kéo thành công dữ liệu từ GitHub (${updatedCount} truyện)! Đang làm mới giao diện...`);

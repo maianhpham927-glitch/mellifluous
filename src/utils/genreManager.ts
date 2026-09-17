@@ -60,7 +60,8 @@ function saveLocal(genres: string[]) {
 
 export const updateGenresFromRemote = (list: string[]) => {
   if (Array.isArray(list) && list.length > 0) {
-    saveLocal(list);
+    const merged = Array.from(new Set([...cachedGenres, ...list]));
+    saveLocal(merged);
   }
 };
 
