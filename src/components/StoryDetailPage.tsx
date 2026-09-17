@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Story, Chapter } from '../types';
-import { getStoryChapters } from '../data/mockData';
+import { getStoryChapters, isStoryDeleted } from '../data/mockData';
 import { subscribeToStoryChapters, recordStoryView, getStoredStories } from '../lib/realtimeService';
+import { safeApiFetch } from '../lib/apiConfig';
 import { StoryDetailView } from './StoryDetailView';
 import { ReaderView } from './ReaderView';
 import { ArrowLeft, BookOpen, AlertCircle, Home, RefreshCw } from 'lucide-react';
@@ -24,25 +25,27 @@ const toSlug = (str: string = ''): string => {
 const findStoryMatch = (list: Story[], queryId?: string): Story | null => {
   if (!queryId || !list || list.length === 0) return null;
   const decoded = decodeURIComponent(queryId).trim();
+  if (isStoryDeleted(decoded) || isStoryDeleted(queryId)) return null;
   const slugTarget = toSlug(decoded);
 
   // 1. Direct ID match
-  const exact = list.find((s) => s.id === decoded || s.id === queryId);
+  const exact = list.find((s) => !isStoryDeleted(s.id) && (s.id === decoded || s.id === queryId));
   if (exact) return exact;
 
   // 2. Special aliases
   if (decoded === 'anh-dao-5cm' || slugTarget === 'anh-dao-5cm') {
-    const alias = list.find((s) => s.id === 'anh-dao-nam-centimet' || s.id === 'anh-dao-5cm');
+    const alias = list.find((s) => !isStoryDeleted(s.id) && (s.id === 'anh-dao-nam-centimet' || s.id === 'anh-dao-5cm'));
     if (alias) return alias;
   }
   if (decoded === 'anh-dao-nam-centimet' || slugTarget === 'anh-dao-nam-centimet') {
-    const alias = list.find((s) => s.id === 'anh-dao-5cm' || s.id === 'anh-dao-nam-centimet');
+    const alias = list.find((s) => !isStoryDeleted(s.id) && (s.id === 'anh-dao-5cm' || s.id === 'anh-dao-nam-centimet'));
     if (alias) return alias;
   }
 
   // 3. Match slug of story ID, Vietnamese title, or original title
   return (
     list.find((s) => {
+      if (isStoryDeleted(s.id)) return false;
       return (
         toSlug(s.id) === slugTarget ||
         toSlug(s.title) === slugTarget ||
@@ -63,7 +66,7 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
 
   // Local state for resolved story (handles asynchronous link opening & direct server loads)
   const [resolvedStory, setResolvedStory] = useState<Story | null>(() => {
-    if (!id) return null;
+    if (!id || isStoryDeleted(id)) return null;
     const found = findStoryMatch(stories, id);
     if (found) return found;
 
@@ -72,12 +75,23 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
     return findStoryMatch(local, id);
   });
 
-  const [isLoadingStory, setIsLoadingStory] = useState<boolean>(!resolvedStory);
-  const [hasAttemptedFetch, setHasAttemptedFetch] = useState<boolean>(false);
+  const [isLoadingStory, setIsLoadingStory] = useState<boolean>(() => {
+    if (!id || isStoryDeleted(id)) return false;
+    return !resolvedStory;
+  });
+  const [hasAttemptedFetch, setHasAttemptedFetch] = useState<boolean>(() => {
+    return Boolean(!id || isStoryDeleted(id));
+  });
 
   // Sync when parent stories prop changes or story is found
   useEffect(() => {
     if (!id) return;
+    if (isStoryDeleted(id)) {
+      setResolvedStory(null);
+      setIsLoadingStory(false);
+      setHasAttemptedFetch(true);
+      return;
+    }
     const found = findStoryMatch(stories, id);
     if (found) {
       setResolvedStory(found);
@@ -87,7 +101,7 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
 
   // Asynchronously fetch story from server API if not found locally
   useEffect(() => {
-    if (!id || resolvedStory) return;
+    if (!id || isStoryDeleted(id) || resolvedStory) return;
 
     let isMounted = true;
     setIsLoadingStory(true);
@@ -95,10 +109,10 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
     const fetchDirectStory = async () => {
       try {
         const encodedId = encodeURIComponent(id.trim());
-        const res = await fetch(`/api/stories/${encodedId}`);
-        if (res.ok) {
+        const res = await safeApiFetch(`/api/stories/${encodedId}`);
+        if (res && res.ok) {
           const data = await res.json();
-          if (isMounted && data?.story) {
+          if (isMounted && data?.story && !isStoryDeleted(data.story.id)) {
             setResolvedStory(data.story);
             if (Array.isArray(data.chapters) && data.chapters.length > 0) {
               setChapters(data.chapters);
@@ -114,12 +128,12 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
 
       // Fallback: check /api/stories full list
       try {
-        const resAll = await fetch('/api/stories');
-        if (resAll.ok) {
+        const resAll = await safeApiFetch('/api/stories');
+        if (resAll && resAll.ok) {
           const allStories: Story[] = await resAll.json();
           if (Array.isArray(allStories)) {
             const found = findStoryMatch(allStories, id);
-            if (isMounted && found) {
+            if (isMounted && found && !isStoryDeleted(found.id)) {
               setResolvedStory(found);
               setIsLoadingStory(false);
               setHasAttemptedFetch(true);
@@ -145,21 +159,24 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
 
   // Record view once when story is loaded
   useEffect(() => {
-    if (resolvedStory) {
+    if (resolvedStory && !isStoryDeleted(resolvedStory.id)) {
       recordStoryView(resolvedStory.id);
     }
   }, [resolvedStory?.id]);
 
   // Realtime chapters state with fallback from mockData
   const [chapters, setChapters] = useState<Chapter[]>(() => {
-    if (!resolvedStory) return [];
+    if (!resolvedStory || isStoryDeleted(resolvedStory.id)) return [];
     return getStoryChapters(resolvedStory.id);
   });
 
   const [isLoadingChapters, setIsLoadingChapters] = useState<boolean>(false);
 
   useEffect(() => {
-    if (!resolvedStory) return;
+    if (!resolvedStory || isStoryDeleted(resolvedStory.id)) {
+      setChapters([]);
+      return;
+    }
     const initial = getStoryChapters(resolvedStory.id);
     if (initial.length > 0) {
       setChapters(initial);
@@ -169,17 +186,21 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
 
     // Subscribe to live chapters from server & cloud
     const unsubscribe = subscribeToStoryChapters(resolvedStory.id, (liveChapters) => {
+      if (isStoryDeleted(resolvedStory.id)) {
+        setChapters([]);
+        return;
+      }
       if (liveChapters && liveChapters.length > 0) {
         setChapters(liveChapters);
         setIsLoadingChapters(false);
       }
     });
 
-    // Also fetch directly from server API
-    fetch(`/api/chapters?storyId=${resolvedStory.id}`)
-      .then((res) => (res.ok ? res.json() : null))
+    // Also fetch directly from server API using safeApiFetch
+    safeApiFetch(`/api/chapters?storyId=${encodeURIComponent(resolvedStory.id)}`)
+      .then((res) => (res && res.ok ? res.json() : null))
       .then((serverChapters) => {
-        if (Array.isArray(serverChapters) && serverChapters.length > 0) {
+        if (!isStoryDeleted(resolvedStory.id) && Array.isArray(serverChapters) && serverChapters.length > 0) {
           setChapters(serverChapters);
           setIsLoadingChapters(false);
         }
@@ -212,7 +233,8 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
   }
 
   // 2. Story Not Found state (only shown after verification has completed)
-  if (!resolvedStory && hasAttemptedFetch) {
+  if (!resolvedStory && (hasAttemptedFetch || (id && isStoryDeleted(id)))) {
+    const wasDeleted = Boolean(id && isStoryDeleted(id));
     return (
       <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-6">
         <div className="w-16 h-16 mx-auto rounded-3xl bg-pink-100 dark:bg-stone-800 text-pink-600 dark:text-pink-400 flex items-center justify-center shadow-xs">
@@ -220,10 +242,12 @@ export const StoryDetailPage: React.FC<StoryDetailPageProps> = ({ stories }) => 
         </div>
         <div className="space-y-2">
           <h1 className="font-serif text-2xl sm:text-3xl font-bold text-stone-800 dark:text-stone-100">
-            Không tìm thấy bài viết hoặc truyện
+            {wasDeleted ? 'Tác phẩm đã ngừng xuất bản hoặc đã gỡ bỏ' : 'Không tìm thấy bài viết hoặc truyện'}
           </h1>
           <p className="text-sm text-stone-500 dark:text-stone-400 font-sans">
-            Đường link bạn mở có thể chưa đúng hoặc tác phẩm đã được điều chỉnh mã định danh (slug).
+            {wasDeleted
+              ? 'Tác phẩm này đã được gỡ bỏ khỏi hệ thống tủ sách và không còn dữ liệu khả dụng.'
+              : 'Đường link bạn mở có thể chưa đúng hoặc tác phẩm đã được điều chỉnh mã định danh (slug).'}
           </p>
         </div>
 

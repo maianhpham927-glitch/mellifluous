@@ -14,7 +14,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { Story, Announcement, RecentUpdate } from '../types';
-import { SUMMER_QUOTES } from '../data/mockData';
+import { SUMMER_QUOTES, isStoryDeleted } from '../data/mockData';
 import { SidebarStoryDropdown } from './SidebarStoryDropdown';
 import { SidebarGenreDropdown } from './SidebarGenreDropdown';
 
@@ -40,8 +40,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isPlayingAudio, setIsPlayingAudio] = useState<boolean>(false);
   const [activeQuoteIndex, setActiveQuoteIndex] = useState<number>(0);
 
-  // All distinct genres across stories
-  const allGenres = Array.from(new Set(stories.flatMap((s) => s.genre)));
+  // Active non-deleted stories
+  const activeStories = stories.filter((s) => !isStoryDeleted(s.id));
+
+  // All distinct genres across active stories
+  const allGenres = Array.from(new Set(activeStories.flatMap((s) => s.genre)));
+
+  // Valid non-deleted recent updates
+  const validRecentUpdates = recentUpdates.filter((u) => !isStoryDeleted(u.storyId));
 
   const handleSelectStory = (storyId: string) => {
     setSelectedStoryId(storyId);
@@ -203,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
           <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-pink-100/80 text-pink-800 dark:bg-stone-800 dark:text-pink-300 font-semibold border border-pink-200 dark:border-stone-700">
-            {stories.length} bộ
+            {activeStories.length} bộ
           </span>
         </div>
 
@@ -219,7 +225,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
           </label>
           <SidebarStoryDropdown
-            stories={stories}
+            stories={activeStories}
             selectedStoryId={selectedStoryId}
             onSelectStory={handleSelectStory}
           />
@@ -237,7 +243,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
           </label>
           <SidebarGenreDropdown
-            stories={stories}
+            stories={activeStories}
             selectedGenre={selectedGenre}
             onFilterGenre={handleFilterGenre}
           />
@@ -265,42 +271,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Timeline list of recent chapters */}
         <div className="space-y-3">
-          {recentUpdates.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onSelectChapter(item.storyId, item.chapterNumber)}
-              className="w-full text-left p-3 rounded-xl bg-stone-50 hover:bg-pink-50/70 dark:bg-stone-900/60 dark:hover:bg-stone-700/60 border border-stone-200/60 dark:border-stone-700/60 hover:border-pink-200 dark:hover:border-pink-800 transition-all duration-200 group cursor-pointer"
-            >
-              <div className="flex items-center justify-between text-[11px] text-stone-500 dark:text-stone-400 mb-1">
-                <span className="font-medium text-pink-600 dark:text-pink-400 flex items-center gap-1 truncate max-w-[65%]">
-                  🌸 {item.storyTitle}
-                </span>
-                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-stone-200/60 dark:bg-stone-800 shrink-0">
-                  {item.timeAgo}
-                </span>
-              </div>
+          {validRecentUpdates.length > 0 ? (
+            validRecentUpdates.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectChapter(item.storyId, item.chapterNumber)}
+                className="w-full text-left p-3 rounded-xl bg-stone-50 hover:bg-pink-50/70 dark:bg-stone-900/60 dark:hover:bg-stone-700/60 border border-stone-200/60 dark:border-stone-700/60 hover:border-pink-200 dark:hover:border-pink-800 transition-all duration-200 group cursor-pointer"
+              >
+                <div className="flex items-center justify-between text-[11px] text-stone-500 dark:text-stone-400 mb-1">
+                  <span className="font-medium text-pink-600 dark:text-pink-400 flex items-center gap-1 truncate max-w-[65%]">
+                    🌸 {item.storyTitle}
+                  </span>
+                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-stone-200/60 dark:bg-stone-800 shrink-0">
+                    {item.timeAgo}
+                  </span>
+                </div>
 
-              <div className="flex items-center justify-between gap-2">
-                <p className="font-serif text-xs sm:text-[13px] font-semibold text-stone-800 dark:text-stone-200 group-hover:text-pink-600 dark:group-hover:text-pink-300 transition-colors line-clamp-1">
-                  {item.chapterTitle}
-                </p>
-                {item.isLocked ? (
-                  <span
-                    className="flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/60 px-1.5 py-0.5 rounded-sm shrink-0 border border-amber-300/60"
-                    title="Chương có cài đặt mật khẩu"
-                  >
-                    <Lock className="w-3 h-3" />
-                    Pass
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-sm shrink-0 border border-emerald-300/60">
-                    Đọc
-                  </span>
-                )}
-              </div>
-            </button>
-          ))}
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-serif text-xs sm:text-[13px] font-semibold text-stone-800 dark:text-stone-200 group-hover:text-pink-600 dark:group-hover:text-pink-300 transition-colors line-clamp-1">
+                    {item.chapterTitle}
+                  </p>
+                  {item.isLocked ? (
+                    <span
+                      className="flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/60 px-1.5 py-0.5 rounded-sm shrink-0 border border-amber-300/60"
+                      title="Chương có cài đặt mật khẩu"
+                    >
+                      <Lock className="w-3 h-3" />
+                      Pass
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-sm shrink-0 border border-emerald-300/60">
+                      Đọc
+                    </span>
+                  )}
+                </div>
+              </button>
+            ))
+          ) : (
+            <div className="p-4 rounded-xl bg-stone-50/80 dark:bg-stone-900/40 border border-dashed border-stone-200 dark:border-stone-700/80 text-center py-5">
+              <span className="text-xl block mb-1">🌸</span>
+              <p className="font-serif text-xs font-medium text-stone-600 dark:text-stone-300">
+                Chưa có chương mới cập nhật
+              </p>
+              <p className="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">
+                Các chương truyện mới xuất bản sẽ hiển thị tại đây
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

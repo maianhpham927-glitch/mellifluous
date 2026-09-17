@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate, useParams } from 'react-router-dom';
 import { ActiveTab, Story, Announcement, RecentUpdate } from './types';
-import { STORIES, ANNOUNCEMENTS, RECENT_UPDATES, getStoryChapters } from './data/mockData';
+import { STORIES, ANNOUNCEMENTS, RECENT_UPDATES, getStoryChapters, isStoryDeleted } from './data/mockData';
 import { subscribeToPublishedStories, subscribeToAnnouncements, subscribeToAllChapters } from './lib/realtimeService';
 import { AuthorPublishModal } from './components/AuthorPublishModal';
 import { Navbar } from './components/Navbar';
@@ -295,6 +295,7 @@ export default function App() {
     const allRecentChapters: (RecentUpdate & { rawTime: number })[] = [];
 
     stories.forEach((story) => {
+      if (isStoryDeleted(story.id)) return;
       const chs = getStoryChapters(story.id);
       chs.forEach((ch) => {
         const timeVal = ch.publishedAt ? new Date(ch.publishedAt).getTime() : 0;
@@ -323,15 +324,16 @@ export default function App() {
       });
       return allRecentChapters.slice(0, 10);
     }
-    return RECENT_UPDATES;
+    return [];
   }, [stories, chaptersVersion]);
 
   const readingStory = readingChapterInfo
     ? stories.find(
         (s) =>
-          s.id === readingChapterInfo.storyId ||
-          (readingChapterInfo.storyId === 'anh-dao-5cm' && s.id === 'anh-dao-nam-centimet') ||
-          (readingChapterInfo.storyId === 'anh-dao-nam-centimet' && s.id === 'anh-dao-5cm')
+          !isStoryDeleted(s.id) &&
+          (s.id === readingChapterInfo.storyId ||
+            (readingChapterInfo.storyId === 'anh-dao-5cm' && s.id === 'anh-dao-nam-centimet') ||
+            (readingChapterInfo.storyId === 'anh-dao-nam-centimet' && s.id === 'anh-dao-5cm'))
       ) || null
     : null;
   const readingChapters = useMemo(() => {

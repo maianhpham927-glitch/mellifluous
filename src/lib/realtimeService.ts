@@ -32,8 +32,10 @@ import {
   setLiveChaptersRuntimeCache,
   setLiveStoryChapters,
   getLiveChaptersRuntimeCache,
+  isStoryDeleted,
+  recordStoryDeleted,
 } from '../data/mockData';
-import { buildApiUrl, hasBackendServer } from './apiConfig';
+import { buildApiUrl, hasBackendServer, safeApiFetch } from './apiConfig';
 import { bgmEngine } from '../utils/audioPlayer';
 import { updateGenresFromRemote } from '../utils/genreManager';
 import { getGithubConfig, commitGithubDataFile, fetchRawGithubJson } from './githubSyncService';
@@ -70,6 +72,13 @@ export const sanitizeForFirestore = <T>(data: T): T => {
 export const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 3000): Promise<Response> => {
   if (typeof window === 'undefined') {
     return Promise.reject(new Error('Window undefined'));
+  }
+  // Guard against 404s when running on static hosts (e.g. GitHub Pages) without a backend server
+  if (url.startsWith('/api') || url.includes('/api/')) {
+    if (!hasBackendServer()) {
+      return Promise.reject(new Error('No backend server configured for static hosting'));
+    }
+    url = buildApiUrl(url);
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -204,9 +213,10 @@ export const notifyGlobalStatsSubscribers = (partial: Partial<GlobalRealtimeStat
 };
 
 const notifyStorySubscribers = (stories: Story[]) => {
+  const clean = stories.filter((s) => !isStoryDeleted(s.id));
   activeStorySubscribers.forEach((cb) => {
     try {
-      cb(stories);
+      cb(clean);
     } catch (e) {
       console.warn('Story subscriber callback error:', e);
     }
@@ -224,11 +234,12 @@ const notifyAnnouncementSubscribers = (announcements: Announcement[]) => {
 };
 
 const notifyChapterSubscribers = (storyId: string, chapters: Chapter[]) => {
+  const cleanChapters = isStoryDeleted(storyId) ? [] : chapters;
   const set = activeChapterSubscribers.get(storyId);
   if (set) {
     set.forEach((cb) => {
       try {
-        cb(chapters);
+        cb(cleanChapters);
       } catch (e) {
         console.warn('Chapter subscriber callback error:', e);
       }
@@ -237,9 +248,15 @@ const notifyChapterSubscribers = (storyId: string, chapters: Chapter[]) => {
 };
 
 const notifyAllChaptersSubscribers = (chaptersMap: Record<string, Chapter[]>) => {
+  const cleanMap: Record<string, Chapter[]> = {};
+  for (const [sId, chs] of Object.entries(chaptersMap)) {
+    if (!isStoryDeleted(sId)) {
+      cleanMap[sId] = chs;
+    }
+  }
   activeAllChaptersSubscribers.forEach((cb) => {
     try {
-      cb(chaptersMap);
+      cb(cleanMap);
     } catch (e) {
       console.warn('All chapters subscriber callback error:', e);
     }
@@ -247,6 +264,8 @@ const notifyAllChaptersSubscribers = (chaptersMap: Record<string, Chapter[]>) =>
 };
 
 export const LEGACY_MOCK_STORY_IDS = new Set([
+  'anh-dao-5cm',
+  'anh-dao-nam-centimet',
   'mua-he-nam-ay',
   'buc-thu-tinh-gui-may-troi',
   'chiec-o-thang-bay',
@@ -260,14 +279,14 @@ export const getStoredStories = (): Story[] => {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const filtered = parsed.filter((s) => !LEGACY_MOCK_STORY_IDS.has(s.id));
+        const filtered = parsed.filter((s) => !isStoryDeleted(s.id));
         if (filtered.length > 0) {
           return filtered;
         }
       }
     }
   } catch {}
-  return STORIES;
+  return STORIES.filter((s) => !isStoryDeleted(s.id));
 };
 
 export const getStoredAnnouncements = (): Announcement[] => {
@@ -2307,7 +2326,10 @@ export const subscribeToPublishedStories = (
             if (statsDel.exists()) {
               const data = statsDel.data();
               if (Array.isArray(data?.storyIds)) {
-                data.storyIds.forEach((id: string) => cloudDeletedIds.add(id));
+                data.storyIds.forEach((id: string) => {
+                  cloudDeletedIds.add(id);
+                  recordStoryDeleted(id);
+                });
               }
             }
           } catch {}
@@ -2317,7 +2339,10 @@ export const subscribeToPublishedStories = (
             if (sysDel.exists()) {
               const data = sysDel.data();
               if (Array.isArray(data?.ids)) {
-                data.ids.forEach((id: string) => cloudDeletedIds.add(id));
+                data.ids.forEach((id: string) => {
+                  cloudDeletedIds.add(id);
+                  recordStoryDeleted(id);
+                });
               }
             }
           } catch {}
@@ -2335,8 +2360,9 @@ export const subscribeToPublishedStories = (
           snapshot.forEach((d) => {
             const item = d.data() as any;
             const sId = item.id || item.storyId || d.id;
-            if (item.deleted || cloudDeletedIds.has(sId) || localDeletedIds.has(sId) || LEGACY_MOCK_STORY_IDS.has(sId)) {
+            if (item.deleted || isStoryDeleted(sId) || cloudDeletedIds.has(sId) || localDeletedIds.has(sId) || LEGACY_MOCK_STORY_IDS.has(sId)) {
               cloudDeletedIds.add(sId);
+              recordStoryDeleted(sId);
               seenIds.add(sId);
               return;
             }
@@ -2369,7 +2395,7 @@ export const subscribeToPublishedStories = (
               seenIds.add(sId);
             } else {
               const baseStory = STORIES.find((s) => s.id === sId);
-              if (baseStory) {
+              if (baseStory && !isStoryDeleted(baseStory.id)) {
                 list.push({
                   ...baseStory,
                   views: Number(item.views) || baseStory.views,
@@ -2383,14 +2409,14 @@ export const subscribeToPublishedStories = (
 
           // Ensure any local author-created stories not in Firestore yet and not deleted are retained
           currentStored.forEach((stored) => {
-            if (!seenIds.has(stored.id) && !cloudDeletedIds.has(stored.id) && !localDeletedIds.has(stored.id) && !LEGACY_MOCK_STORY_IDS.has(stored.id)) {
+            if (!seenIds.has(stored.id) && !isStoryDeleted(stored.id) && !cloudDeletedIds.has(stored.id) && !localDeletedIds.has(stored.id) && !LEGACY_MOCK_STORY_IDS.has(stored.id)) {
               list.push(stored);
               seenIds.add(stored.id);
             }
           });
 
           STORIES.forEach((base) => {
-            if (!seenIds.has(base.id) && !cloudDeletedIds.has(base.id) && !localDeletedIds.has(base.id) && !LEGACY_MOCK_STORY_IDS.has(base.id)) {
+            if (!seenIds.has(base.id) && !isStoryDeleted(base.id) && !cloudDeletedIds.has(base.id) && !localDeletedIds.has(base.id) && !LEGACY_MOCK_STORY_IDS.has(base.id)) {
               list.push(base);
               seenIds.add(base.id);
             }
@@ -2412,13 +2438,13 @@ export const subscribeToPublishedStories = (
           callback(list);
           notifyStorySubscribers(list);
 
-          // Keep server API synced in background
-          if (typeof window !== 'undefined') {
-            fetchWithTimeout('/api/sync', {
+          // Keep server API synced in background if backend server exists
+          if (typeof window !== 'undefined' && hasBackendServer()) {
+            safeApiFetch('/api/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ stories: list }),
-            }, 3000).catch(() => {});
+            }).catch(() => {});
           }
         },
         (err) => {
@@ -2598,25 +2624,23 @@ export const publishStory = async (story: Story): Promise<{
  * Guarantees deletion propagates to all devices and clients.
  */
 export const deleteStory = async (storyId: string): Promise<void> => {
-  // 1. Mark as deleted in localStorage
-  try {
-    const rawDel = localStorage.getItem('mel_deleted_story_ids');
-    const delList: string[] = rawDel ? JSON.parse(rawDel) : [];
-    if (!delList.includes(storyId)) {
-      delList.push(storyId);
-      localStorage.setItem('mel_deleted_story_ids', JSON.stringify(delList));
-    }
-  } catch {}
+  // 1. Mark as deleted globally in runtime cache, mockData sets, and localStorage
+  recordStoryDeleted(storyId);
+  const aliasId = storyId === 'anh-dao-nam-centimet' ? 'anh-dao-5cm' : storyId === 'anh-dao-5cm' ? 'anh-dao-nam-centimet' : null;
+  if (aliasId) recordStoryDeleted(aliasId);
 
   // 2. Remove from localStorage and runtime memory cache
   try {
     const currentList = getStoredStories();
-    const updatedList = currentList.filter((s) => s.id !== storyId);
+    const updatedList = currentList.filter((s) => s.id !== storyId && s.id !== aliasId);
     localStorage.setItem('mel_published_stories', JSON.stringify(updatedList));
     localStorage.removeItem(`mel_chapters_${storyId}`);
+    if (aliasId) localStorage.removeItem(`mel_chapters_${aliasId}`);
     setLiveStoryChapters(storyId, []);
+    if (aliasId) setLiveStoryChapters(aliasId, []);
     notifyStorySubscribers(updatedList);
     notifyChapterSubscribers(storyId, []);
+    if (aliasId) notifyChapterSubscribers(aliasId, []);
   } catch (localErr) {
     console.warn('Local delete warning:', localErr);
   }
@@ -2797,6 +2821,7 @@ export const subscribeToAllChapters = (
 
           // For each story, sort and update
           for (const [sId, chList] of Object.entries(grouped)) {
+            if (isStoryDeleted(sId)) continue;
             chList.sort((a, b) => {
               const numA = Number(a.chapterNumber) || 0;
               const numB = Number(b.chapterNumber) || 0;
@@ -2816,9 +2841,9 @@ export const subscribeToAllChapters = (
           callback(fullCache);
           notifyAllChaptersSubscribers(fullCache);
 
-          // Keep server API synced in background
-          if (typeof window !== 'undefined') {
-            fetch('/api/sync', {
+          // Keep server API synced in background if backend server exists
+          if (typeof window !== 'undefined' && hasBackendServer()) {
+            safeApiFetch('/api/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chapters: fullCache }),

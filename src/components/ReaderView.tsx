@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Story, Chapter, RealtimeComment } from '../types';
+import { isStoryDeleted } from '../data/mockData';
 import {
   subscribeToComments,
   postRealtimeComment,
@@ -565,6 +566,34 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   });
 
   const readingMinutes = Math.max(1, Math.round(chapter.wordCount / 380));
+
+  if (isStoryDeleted(story.id)) {
+    return (
+      <div className="max-w-2xl mx-auto py-20 px-4 text-center space-y-6">
+        <div className="w-16 h-16 mx-auto rounded-3xl bg-pink-100 dark:bg-stone-800 text-pink-600 dark:text-pink-400 flex items-center justify-center shadow-xs">
+          <BookOpen className="w-8 h-8" />
+        </div>
+        <div className="space-y-2">
+          <h1 className="font-serif text-2xl sm:text-3xl font-bold text-stone-800 dark:text-stone-100">
+            Tác phẩm đã ngừng xuất bản hoặc đã gỡ bỏ
+          </h1>
+          <p className="text-sm text-stone-500 dark:text-stone-400 font-sans">
+            Tác phẩm này đã được tác giả gỡ bỏ khỏi hệ thống tủ sách và không còn dữ liệu chương khả dụng.
+          </p>
+        </div>
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-medium transition-colors shadow-xs cursor-pointer"
+          >
+            <Home className="w-4 h-4" />
+            <span>Về trang chủ</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <article

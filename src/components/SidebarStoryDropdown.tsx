@@ -11,6 +11,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { Story } from '../types';
+import { isStoryDeleted } from '../data/mockData';
 
 interface SidebarStoryDropdownProps {
   stories: Story[];
@@ -53,6 +54,7 @@ export const SidebarStoryDropdown: React.FC<SidebarStoryDropdownProps> = ({
 
   // Filter stories based on search term and status tab
   const filteredStories = stories.filter((story) => {
+    if (isStoryDeleted(story.id)) return false;
     const matchesSearch =
       story.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       story.author.toLowerCase().includes(searchTerm.toLowerCase()) ||

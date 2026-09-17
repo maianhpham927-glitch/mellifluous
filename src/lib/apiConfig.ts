@@ -76,3 +76,32 @@ export const buildApiUrl = (path: string): string => {
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   return `${base}${cleanPath}`;
 };
+
+/**
+ * Universal safe fetcher:
+ * - If running on static hosting (e.g. GitHub Pages) without an external backend,
+ *   it IMMEDIATELY returns null without making a request, eliminating 404 console errors.
+ * - If a backend exists, it fetches with a configurable timeout.
+ */
+export const safeApiFetch = async (
+  path: string,
+  init?: RequestInit,
+  timeoutMs = 4000
+): Promise<Response | null> => {
+  if (!hasBackendServer()) {
+    return null;
+  }
+  const url = buildApiUrl(path);
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, {
+      ...init,
+      signal: init?.signal || controller.signal,
+    });
+    clearTimeout(timer);
+    return res;
+  } catch {
+    return null;
+  }
+};
