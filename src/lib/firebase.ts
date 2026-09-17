@@ -81,10 +81,10 @@ export const isFirestoreEnabled = (): boolean => {
   if (typeof window === 'undefined') return false;
   try {
     const saved = localStorage.getItem('mel_firestore_enabled');
-    // Default to false because current project's free quota is exhausted
-    return saved === 'true';
+    // Default to true now that fresh project is linked to user account
+    return saved !== 'false';
   } catch {
-    return false;
+    return true;
   }
 };
 
@@ -92,11 +92,14 @@ export const setFirestoreEnabled = (enabled: boolean) => {
   if (typeof window !== 'undefined') {
     try {
       localStorage.setItem('mel_firestore_enabled', enabled ? 'true' : 'false');
+      if (enabled) {
+        localQuotaExhausted = false;
+      }
     } catch {}
   }
 };
 
-let localQuotaExhausted = !isFirestoreEnabled();
+let localQuotaExhausted = false;
 
 export const isFirestoreQuotaExhausted = (): boolean => {
   return !isFirestoreEnabled() || localQuotaExhausted;
