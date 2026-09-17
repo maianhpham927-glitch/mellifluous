@@ -23,9 +23,21 @@ export const isStaticHosting = (): boolean => {
 export const getApiBaseUrl = (): string => {
   if (typeof window === 'undefined') return '';
 
+  const isInvalidBackend = (url: string): boolean => {
+    if (!url || typeof url !== 'string') return true;
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('.github.io') ||
+      lower.includes('.pages.dev') ||
+      lower.includes('.web.app') ||
+      lower.includes('.firebaseapp.com') ||
+      lower.includes('.netlify.app')
+    );
+  };
+
   // 1. Environment variable if provided
   const envUrl = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) || '';
-  if (envUrl && typeof envUrl === 'string' && envUrl.trim().startsWith('http')) {
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().startsWith('http') && !isInvalidBackend(envUrl)) {
     return envUrl.trim().replace(/\/+$/, '');
   }
 
@@ -33,11 +45,22 @@ export const getApiBaseUrl = (): string => {
   try {
     const saved = localStorage.getItem('mel_backend_api_url');
     if (saved && typeof saved === 'string' && saved.trim().startsWith('http')) {
-      return saved.trim().replace(/\/+$/, '');
+      const clean = saved.trim().replace(/\/+$/, '');
+      if (isInvalidBackend(clean)) {
+        // Automatically remove invalid static host URL from localStorage
+        localStorage.removeItem('mel_backend_api_url');
+      } else {
+        return clean;
+      }
     }
   } catch {}
 
-  // 3. Default: relative path for same-origin proxy (Cloud Run, local dev, custom domain)
+  // 3. If running on static hosting without a valid external backend, baseUrl is empty
+  if (isStaticHosting()) {
+    return '';
+  }
+
+  // 4. Default: relative path for same-origin proxy (Cloud Run, local dev container)
   return '';
 };
 
@@ -45,7 +68,13 @@ export const saveCustomBackendUrl = (url: string): void => {
   if (typeof window === 'undefined') return;
   try {
     const trimmed = url.trim().replace(/\/+$/, '');
-    if (trimmed) {
+    if (
+      trimmed &&
+      !trimmed.includes('.github.io') &&
+      !trimmed.includes('.pages.dev') &&
+      !trimmed.includes('.web.app') &&
+      !trimmed.includes('.netlify.app')
+    ) {
       localStorage.setItem('mel_backend_api_url', trimmed);
     } else {
       localStorage.removeItem('mel_backend_api_url');
@@ -57,7 +86,7 @@ export const saveCustomBackendUrl = (url: string): void => {
  * Returns true if an active backend server is configured or expected:
  * - Localhost / dev server
  * - AI Studio / Cloud Run container
- * - Explicit backend URL provided via VITE_BACKEND_URL or mel_backend_api_url
+ * - Explicit backend URL provided via VITE_BACKEND_URL or mel_backend_api_url (excluding static hosts)
  * Returns false on GitHub Pages or static hosts when no backend URL has been set.
  */
 export const hasBackendServer = (): boolean => {

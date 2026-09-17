@@ -116,7 +116,7 @@ export const checkIsFirestoreBlocked = (): boolean => {
   return false;
 };
 
-export const flagFirestoreQuotaExceeded = (err?: any) => {
+export const flagFirestoreQuotaExceeded = (err?: any): boolean => {
   const msg = err?.message || String(err || '');
   if (
     msg.includes('RESOURCE_EXHAUSTED') ||
@@ -125,9 +125,13 @@ export const flagFirestoreQuotaExceeded = (err?: any) => {
     msg.includes('resource-exhausted')
   ) {
     isFirestoreQuotaBlocked = true;
-    quotaBlockedUntil = Date.now() + 15 * 60 * 1000; // 15 minutes backoff
-    console.warn('[Firestore] Quota limit active. Operating seamlessly in Server REST + SSE mode.');
+    quotaBlockedUntil = Date.now() + 60 * 60 * 1000; // 1 hour backoff
+    try {
+      localStorage.setItem('mel_firestore_quota_exhausted_until', String(Date.now() + 2 * 60 * 60 * 1000));
+    } catch {}
+    return true;
   }
+  return false;
 };
 
 /**
@@ -898,17 +902,19 @@ export const startActiveReaderHeartbeat = (onCountChange: (count: number) => voi
   onCountChange(Math.max(1, currentLiveActiveReaders));
 
   // Query server for latest active readers count without writing to Firestore
-  fetchWithTimeout('/api/active-readers', {}, 2500)
-    .then((r) => r.json())
-    .then((data) => {
-      if (typeof data?.count === 'number') {
-        currentLiveActiveReaders = Math.max(1, data.count);
-        onCountChange(currentLiveActiveReaders);
-      }
-    })
-    .catch(() => {
-      onCountChange(Math.max(1, currentLiveActiveReaders));
-    });
+  if (hasBackendServer()) {
+    fetchWithTimeout('/api/active-readers', {}, 2500)
+      .then((r) => r.json())
+      .then((data) => {
+        if (typeof data?.count === 'number') {
+          currentLiveActiveReaders = Math.max(1, data.count);
+          onCountChange(currentLiveActiveReaders);
+        }
+      })
+      .catch(() => {
+        onCountChange(Math.max(1, currentLiveActiveReaders));
+      });
+  }
 
   return () => {
     activeReaderSubscribers.delete(onCountChange);
@@ -1071,7 +1077,7 @@ export const subscribeToStoryStats = (
 export const recordStoryView = async (storyId: string): Promise<void> => {
   try {
     // Chỉ tăng lượt xem khi độc giả đọc truyện trên trang web chính thức / public link
-    if (!isPublicOfficialSite()) {
+    if (!isPublicOfficialSite() || checkIsFirestoreBlocked()) {
       return;
     }
 
@@ -1100,7 +1106,7 @@ export const recordStoryView = async (storyId: string): Promise<void> => {
       });
     }
   } catch (err) {
-    console.warn('Record story view error:', err);
+    flagFirestoreQuotaExceeded(err);
   }
 };
 
@@ -1108,6 +1114,7 @@ export const recordStoryView = async (storyId: string): Promise<void> => {
  * Like or unlike a story in real time.
  */
 export const toggleStoryLike = async (storyId: string, isLiking: boolean): Promise<void> => {
+  if (checkIsFirestoreBlocked()) return;
   try {
     const storyDocRef = doc(db, 'story_stats', storyId);
     const snap = await getDoc(storyDocRef);
@@ -1137,7 +1144,7 @@ export const toggleStoryLike = async (storyId: string, isLiking: boolean): Promi
       totalLikes: increment(delta),
     }).catch(() => {});
   } catch (err) {
-    console.warn('Toggle story like error:', err);
+    flagFirestoreQuotaExceeded(err);
   }
 };
 
@@ -1145,6 +1152,7 @@ export const toggleStoryLike = async (storyId: string, isLiking: boolean): Promi
  * Follow or unfollow a story in real time.
  */
 export const toggleStoryFollow = async (storyId: string, isFollowing: boolean): Promise<void> => {
+  if (checkIsFirestoreBlocked()) return;
   try {
     const storyDocRef = doc(db, 'story_stats', storyId);
     const snap = await getDoc(storyDocRef);
@@ -1174,7 +1182,7 @@ export const toggleStoryFollow = async (storyId: string, isFollowing: boolean): 
       totalFollowers: increment(delta),
     }).catch(() => {});
   } catch (err) {
-    console.warn('Toggle story follow error:', err);
+    flagFirestoreQuotaExceeded(err);
   }
 };
 
@@ -1182,6 +1190,7 @@ export const toggleStoryFollow = async (storyId: string, isFollowing: boolean): 
  * Submit a real reader rating (1-5 stars) for a story.
  */
 export const submitStoryRating = async (storyId: string, stars: number): Promise<void> => {
+  if (checkIsFirestoreBlocked()) return;
   try {
     const storyDocRef = doc(db, 'story_stats', storyId);
     const snap = await getDoc(storyDocRef);
@@ -1205,7 +1214,7 @@ export const submitStoryRating = async (storyId: string, stars: number): Promise
       });
     }
   } catch (err) {
-    console.warn('Submit story rating error:', err);
+    flagFirestoreQuotaExceeded(err);
   }
 };
 
@@ -2448,8 +2457,9 @@ export const subscribeToPublishedStories = (
           }
         },
         (err) => {
-          flagFirestoreQuotaExceeded(err);
-          console.warn('story_stats snapshot notice:', err?.message || err);
+          if (!flagFirestoreQuotaExceeded(err)) {
+            console.warn('story_stats snapshot notice:', err?.message || err);
+          }
         }
       );
     } catch (e) {
@@ -2547,15 +2557,17 @@ export const publishStory = async (story: Story): Promise<{
   const syncTasks: Promise<any>[] = [];
 
   // A. Central Server API sync (instant and reliable)
-  syncTasks.push(
-    fetchWithTimeout('/api/stories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cleanStory),
-    }, 4000).catch((apiErr) => {
-      console.warn('Server API story save note:', apiErr);
-    })
-  );
+  if (hasBackendServer()) {
+    syncTasks.push(
+      fetchWithTimeout('/api/stories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanStory),
+      }, 4000).catch((apiErr) => {
+        console.warn('Server API story save note:', apiErr);
+      })
+    );
+  }
 
   // B. Firestore cloud sync (only if quota is healthy)
   if (!checkIsFirestoreBlocked()) {
@@ -2648,13 +2660,15 @@ export const deleteStory = async (storyId: string): Promise<void> => {
   // 3. Background Central Server API delete & Firestore delete
   const delTasks: Promise<any>[] = [];
 
-  delTasks.push(
-    fetchWithTimeout(`/api/stories/${encodeURIComponent(storyId)}`, {
-      method: 'DELETE',
-    }, 4000).catch((apiErr) => {
-      console.warn('Server API delete story warning:', apiErr);
-    })
-  );
+  if (hasBackendServer()) {
+    delTasks.push(
+      fetchWithTimeout(`/api/stories/${encodeURIComponent(storyId)}`, {
+        method: 'DELETE',
+      }, 4000).catch((apiErr) => {
+        console.warn('Server API delete story warning:', apiErr);
+      })
+    );
+  }
 
   if (!checkIsFirestoreBlocked()) {
     const firestoreDelete = async () => {
@@ -2745,8 +2759,8 @@ export const subscribeToAllChapters = (
       };
 
       if (hasBackendServer()) {
-        fetch(buildApiUrl('/api/chapters'))
-          .then((res) => (res.ok ? res.json() : null))
+        safeApiFetch('/api/chapters')
+          .then((res) => (res && res.ok ? res.json() : null))
           .then((chaptersMap) => {
             if (chaptersMap && typeof chaptersMap === 'object' && Object.keys(chaptersMap).length > 0) {
               applyChaptersMap(chaptersMap);
@@ -2851,8 +2865,9 @@ export const subscribeToAllChapters = (
           }
         },
         (err) => {
-          flagFirestoreQuotaExceeded(err);
-          console.warn('chapter_stats snapshot error:', err?.message || err);
+          if (!flagFirestoreQuotaExceeded(err)) {
+            console.warn('chapter_stats snapshot error:', err?.message || err);
+          }
         }
       );
     } catch (e) {
@@ -2911,51 +2926,27 @@ export const subscribeToStoryChapters = (
     };
 
     if (hasBackendServer()) {
-      fetch(buildApiUrl(`/api/chapters?storyId=${encodeURIComponent(storyId)}`))
-        .then((res) => (res.ok ? res.json() : null))
+      safeApiFetch(`/api/chapters?storyId=${encodeURIComponent(storyId)}`)
+        .then((res) => (res && res.ok ? res.json() : null))
         .then((serverList) => {
           if (Array.isArray(serverList) && serverList.length > 0) {
             handleIncomingChapters(serverList);
-          } else {
-            // Fallback to GitHub raw JSON
-            fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
-              .then((allChapters) => {
-                if (allChapters) {
-                  const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
-                  if (Array.isArray(list) && list.length > 0) {
-                    handleIncomingChapters(list);
-                  }
-                }
-              })
-              .catch(() => {});
-          }
-        })
-        .catch(() => {
-          // Fallback to GitHub raw JSON on network error
-          fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
-            .then((allChapters) => {
-              if (allChapters) {
-                const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
-                if (Array.isArray(list) && list.length > 0) {
-                  handleIncomingChapters(list);
-                }
-              }
-            })
-            .catch(() => {});
-        });
-    } else {
-      // Direct GitHub Raw JSON fallback on static hosting without custom backend
-      fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
-        .then((allChapters) => {
-          if (allChapters) {
-            const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
-            if (Array.isArray(list) && list.length > 0) {
-              handleIncomingChapters(list);
-            }
           }
         })
         .catch(() => {});
     }
+
+    // Direct GitHub Raw JSON fetch for resilient cross-device sync
+    fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+      .then((allChapters) => {
+        if (allChapters) {
+          const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
+          if (Array.isArray(list) && list.length > 0) {
+            handleIncomingChapters(list);
+          }
+        }
+      })
+      .catch(() => {});
   }
 
   // 4. Connect to Firestore query on chapter_stats if quota is healthy
@@ -3025,8 +3016,9 @@ export const subscribeToStoryChapters = (
           notifyChapterSubscribers(storyId, finalChapters);
         },
         (err) => {
-          flagFirestoreQuotaExceeded(err);
-          console.warn(`chapter_stats snapshot error for ${storyId}:`, err?.message || err);
+          if (!flagFirestoreQuotaExceeded(err)) {
+            console.warn(`chapter_stats snapshot error for ${storyId}:`, err?.message || err);
+          }
         }
       );
     } catch (e) {
@@ -3107,15 +3099,17 @@ export const publishChapter = async (chapter: Chapter): Promise<{
   const syncTasks: Promise<any>[] = [];
 
   // A. Central Server API sync (instant and reliable)
-  syncTasks.push(
-    fetchWithTimeout('/api/chapters', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cleanChapter),
-    }, 4000).catch((apiErr) => {
-      console.warn('Server API chapter save note:', apiErr);
-    })
-  );
+  if (hasBackendServer()) {
+    syncTasks.push(
+      fetchWithTimeout('/api/chapters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanChapter),
+      }, 4000).catch((apiErr) => {
+        console.warn('Server API chapter save note:', apiErr);
+      })
+    );
+  }
 
   // B. Firestore sync (only if quota is healthy)
   if (!checkIsFirestoreBlocked()) {
@@ -3242,13 +3236,15 @@ export const deleteChapter = async (storyId: string, chapterId: string): Promise
   const delTasks: Promise<any>[] = [];
 
   // Server API delete with timeout
-  delTasks.push(
-    fetchWithTimeout(`/api/chapters/${encodeURIComponent(chapterId)}?storyId=${encodeURIComponent(storyId)}`, {
-      method: 'DELETE',
-    }, 6000).catch((apiErr) => {
-      console.warn('Server API chapter delete warning:', apiErr);
-    })
-  );
+  if (hasBackendServer()) {
+    delTasks.push(
+      fetchWithTimeout(`/api/chapters/${encodeURIComponent(chapterId)}?storyId=${encodeURIComponent(storyId)}`, {
+        method: 'DELETE',
+      }, 6000).catch((apiErr) => {
+        console.warn('Server API chapter delete warning:', apiErr);
+      })
+    );
+  }
 
   // Cloud Firestore delete with timeout
   const firestoreDelete = async () => {
@@ -3382,8 +3378,9 @@ export const subscribeToAnnouncements = (
           }
         },
         (err) => {
-          flagFirestoreQuotaExceeded(err);
-          console.warn('Announcements snapshot warning:', err?.message || err);
+          if (!flagFirestoreQuotaExceeded(err)) {
+            console.warn('Announcements snapshot warning:', err?.message || err);
+          }
         }
       );
     } catch (e) {
@@ -3424,15 +3421,17 @@ export const publishAnnouncement = async (announcement: Announcement): Promise<v
 
   const tasks: Promise<any>[] = [];
 
-  tasks.push(
-    fetchWithTimeout('/api/announcements', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cleanAnn),
-    }, 3000).catch((apiErr) => {
-      console.warn('Server API announcement save warning:', apiErr);
-    })
-  );
+  if (hasBackendServer()) {
+    tasks.push(
+      fetchWithTimeout('/api/announcements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanAnn),
+      }, 3000).catch((apiErr) => {
+        console.warn('Server API announcement save warning:', apiErr);
+      })
+    );
+  }
 
   if (!checkIsFirestoreBlocked()) {
     const firestoreSave = async () => {

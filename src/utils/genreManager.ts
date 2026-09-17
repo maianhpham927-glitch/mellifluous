@@ -112,7 +112,10 @@ if (db && !isFirestoreQuotaExhausted()) {
         }
       },
       (err) => {
-        console.warn('site_stats genres listener notice:', err?.message || err);
+        const msg = String(err?.message || err || '');
+        if (!msg.includes('Quota') && !msg.includes('quota') && !msg.includes('resource-exhausted')) {
+          console.warn('site_stats genres listener notice:', msg);
+        }
       }
     );
   } catch {}

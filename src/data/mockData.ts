@@ -250,7 +250,7 @@ export const ANNOUNCEMENTS: Announcement[] = [
   {
     id: 'tb-3',
     title: 'Cập nhật hệ thống: Đồng bộ trạng thái và danh sách chương truyện mới',
-    tag: 'Hệ thống',
+    tag: 'Thông báo',
     date: '17/09/2026',
     content:
       'Hệ thống blog đã được nâng cấp tối ưu hóa đồng bộ dữ liệu thời gian thực trên mọi thiết bị và trình duyệt. Các tác phẩm đã hoàn và đang ra được tự động cập nhật chuẩn xác nhất.',

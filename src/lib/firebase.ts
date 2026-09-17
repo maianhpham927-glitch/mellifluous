@@ -4,7 +4,7 @@ import {
   initializeFirestore,
   doc,
   setDoc as rawSetDoc,
-  getDoc,
+  getDoc as rawGetDoc,
   updateDoc as rawUpdateDoc,
   increment,
   onSnapshot as rawOnSnapshot,
@@ -15,7 +15,7 @@ import {
   limit,
   addDoc as rawAddDoc,
   deleteDoc as rawDeleteDoc,
-  getDocs,
+  getDocs as rawGetDocs,
   writeBatch as rawWriteBatch,
   serverTimestamp,
   arrayUnion,
@@ -112,14 +112,30 @@ export const setFirestoreEnabled = (enabled: boolean) => {
 };
 
 let localQuotaExhausted = false;
+let quotaNoticeLogged = false;
 
 export const isFirestoreQuotaExhausted = (): boolean => {
-  return !isFirestoreEnabled() || localQuotaExhausted;
+  if (!isFirestoreEnabled()) return true;
+  if (localQuotaExhausted) return true;
+  try {
+    const rawUntil = localStorage.getItem('mel_firestore_quota_exhausted_until');
+    if (rawUntil) {
+      const until = Number(rawUntil);
+      if (!isNaN(until) && Date.now() < until) {
+        return true;
+      } else {
+        localStorage.removeItem('mel_firestore_quota_exhausted_until');
+      }
+    }
+  } catch {}
+  return false;
 };
 
 export const markFirestoreQuotaExhausted = () => {
   localQuotaExhausted = true;
-  console.warn('[Firestore] Notice: Write operation quota warning received from Google Cloud. Switched to GitHub / Server mode.');
+  try {
+    localStorage.setItem('mel_firestore_quota_exhausted_until', String(Date.now() + 2 * 60 * 60 * 1000));
+  } catch {}
 };
 
 export const checkAndHandleQuotaError = (err: any): boolean => {
@@ -131,13 +147,71 @@ export const checkAndHandleQuotaError = (err: any): boolean => {
     msg.includes('resource-exhausted') ||
     msg.includes('Quota limit exceeded') ||
     msg.includes('Free daily write units') ||
-    msg.includes('Quota exceeded')
+    msg.includes('Free daily read units') ||
+    msg.includes('Quota exceeded') ||
+    msg.includes('quota')
   ) {
     localQuotaExhausted = true;
-    console.warn('[Firestore] Daily free write quota reached on project. Operating smoothly with GitHub / Server backup:', err);
+    try {
+      localStorage.setItem('mel_firestore_quota_exhausted_until', String(Date.now() + 2 * 60 * 60 * 1000));
+    } catch {}
+    if (!quotaNoticeLogged) {
+      quotaNoticeLogged = true;
+      console.info('[Firestore] Giới hạn đọc/ghi miễn phí trong ngày của Firestore đã đạt mức tối đa. Blog tự động vận hành mượt mà ở chế độ offline-first qua LocalStorage & GitHub.');
+    }
     return true;
   }
   return false;
+};
+
+// Resilient getDoc wrapper: prevents Quota limit exceeded exceptions from crashing the app
+export const getDoc = async (docRef: DocumentReference<DocumentData>): Promise<any> => {
+  if (isFirestoreQuotaExhausted()) {
+    return {
+      exists: () => false,
+      data: () => null,
+      id: docRef.id,
+      ref: docRef,
+    };
+  }
+  try {
+    return await rawGetDoc(docRef);
+  } catch (err: any) {
+    if (checkAndHandleQuotaError(err)) {
+      return {
+        exists: () => false,
+        data: () => null,
+        id: docRef.id,
+        ref: docRef,
+      };
+    }
+    throw err;
+  }
+};
+
+// Resilient getDocs wrapper: prevents Quota limit exceeded exceptions from crashing query execution
+export const getDocs = async (q: any): Promise<any> => {
+  if (isFirestoreQuotaExhausted()) {
+    return {
+      empty: true,
+      size: 0,
+      docs: [],
+      forEach: () => {},
+    };
+  }
+  try {
+    return await rawGetDocs(q);
+  } catch (err: any) {
+    if (checkAndHandleQuotaError(err)) {
+      return {
+        empty: true,
+        size: 0,
+        docs: [],
+        forEach: () => {},
+      };
+    }
+    throw err;
+  }
 };
 
 // Resilient setDoc wrapper: always attempts Firestore write, gracefully catches quota errors
@@ -264,8 +338,6 @@ export const onSnapshot = (
 
 export {
   doc,
-  getDoc,
-  getDocs,
   increment,
   collection,
   query,
