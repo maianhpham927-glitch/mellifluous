@@ -182,8 +182,16 @@ export const AuthorEditStoryTab: React.FC<AuthorEditStoryTabProps> = ({
         updatedAt: 'Vừa cập nhật',
       };
 
-      await publishStory(updatedStory);
-      onFeedback('success', `Đã cập nhật thành công tác phẩm "${updatedStory.title}"!`);
+      const pubResult = await publishStory(updatedStory);
+      if (pubResult?.github?.attempted) {
+        if (pubResult.github.success) {
+          onFeedback('success', `Đã cập nhật tác phẩm "${updatedStory.title}" và đẩy lên GitHub!`);
+        } else {
+          onFeedback('error', `Đã lưu cập nhật, nhưng đồng bộ GitHub gặp lỗi: ${pubResult.github.error}`);
+        }
+      } else {
+        onFeedback('success', `Đã cập nhật thành công tác phẩm "${updatedStory.title}"!`);
+      }
       if (onStoriesUpdated) onStoriesUpdated();
     } catch {
       onFeedback('error', 'Không thể lưu thay đổi vào cơ sở dữ liệu.');

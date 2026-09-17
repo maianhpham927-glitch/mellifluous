@@ -25,6 +25,7 @@ import {
   getGithubConfig,
   saveGithubConfig,
   testGithubConnection,
+  testGithubWrite,
   commitGithubDataFile,
   fetchRawGithubJson,
   GithubConfig,
@@ -62,10 +63,16 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
   const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState<boolean>(() => getGithubConfig().autoSync);
   const [showToken, setShowToken] = useState(false);
   const [isTestingGithub, setIsTestingGithub] = useState(false);
+  const [isTestingWrite, setIsTestingWrite] = useState(false);
   const [githubTestResult, setGithubTestResult] = useState<{
     success: boolean;
     message: string;
     username?: string;
+  } | null>(null);
+  const [testWriteResult, setTestWriteResult] = useState<{
+    success: boolean;
+    message: string;
+    commitUrl?: string;
   } | null>(null);
 
   // Server state
@@ -85,6 +92,17 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
   const [isSyncingToGithub, setIsSyncingToGithub] = useState(false);
   const [isPullingFromGithub, setIsPullingFromGithub] = useState(false);
   const [isRestoringFile, setIsRestoringFile] = useState(false);
+
+  // Auto-persist GitHub config whenever user edits input fields
+  useEffect(() => {
+    const updated = saveGithubConfig({
+      repo: githubRepoInput.trim(),
+      branch: githubBranchInput.trim(),
+      token: githubTokenInput.trim(),
+      autoSync: isAutoSyncEnabled,
+    });
+    setGhConfig(updated);
+  }, [githubRepoInput, githubBranchInput, githubTokenInput, isAutoSyncEnabled]);
 
   // Test Server connection on mount
   useEffect(() => {
@@ -112,7 +130,7 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
       autoSync: isAutoSyncEnabled,
     });
     setGhConfig(updated);
-    onFeedback('success', 'Đã lưu cấu hình GitHub thành công!');
+    onFeedback('success', 'Đã lưu cấu hình GitHub vào bộ nhớ an toàn!');
   };
 
   // Test GitHub Connection handler
@@ -124,6 +142,23 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
     const result = await testGithubConnection();
     setIsTestingGithub(false);
     setGithubTestResult(result);
+
+    if (result.success) {
+      onFeedback('success', result.message);
+    } else {
+      onFeedback('error', result.message);
+    }
+  };
+
+  // Test Direct Write Permission (Live Commit Test)
+  const handleTestWrite = async () => {
+    handleSaveGithubConfig();
+    setIsTestingWrite(true);
+    setTestWriteResult(null);
+
+    const result = await testGithubWrite();
+    setIsTestingWrite(false);
+    setTestWriteResult(result);
 
     if (result.success) {
       onFeedback('success', result.message);
@@ -344,7 +379,7 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
               </span>
             </div>
             <p className="text-xs text-stone-500 dark:text-stone-400">
-              Project Firestore cũ đã chạm ngưỡng hạn mức. Đã ngắt kết nối để website tải trơn tru, không báo lỗi mạng.
+              Dự án Cloud Firestore mới (<code className="text-amber-600 dark:text-amber-400 font-mono text-[10px]">gen-lang-client-0187202886</code>) đã kết nối thành công, đồng bộ dữ liệu thời gian thực giữa các thiết bị.
             </p>
           </div>
           <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-400">
@@ -493,6 +528,20 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
             <span>Kiểm tra kết nối</span>
           </button>
 
+          <button
+            type="button"
+            onClick={handleTestWrite}
+            disabled={isTestingWrite || !githubTokenInput.trim()}
+            className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1.5 shadow-2xs"
+          >
+            {isTestingWrite ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            <span>Thử cam kết (Commit Test)</span>
+          </button>
+
           {githubTestResult && (
             <span
               className={`text-xs font-medium flex items-center gap-1.5 px-3 py-1.5 rounded-xl ${
@@ -503,6 +552,29 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
             >
               {githubTestResult.success ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
               <span>{githubTestResult.message}</span>
+            </span>
+          )}
+
+          {testWriteResult && (
+            <span
+              className={`text-xs font-medium flex items-center gap-1.5 px-3 py-1.5 rounded-xl ${
+                testWriteResult.success
+                  ? 'bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
+                  : 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+              }`}
+            >
+              {testWriteResult.success ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+              <span>{testWriteResult.message}</span>
+              {testWriteResult.commitUrl && (
+                <a
+                  href={testWriteResult.commitUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline font-bold ml-1 hover:text-purple-900"
+                >
+                  Xem commit
+                </a>
+              )}
             </span>
           )}
         </div>

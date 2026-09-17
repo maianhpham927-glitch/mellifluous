@@ -2227,25 +2227,17 @@ export const subscribeToPublishedStories = (
         .then((serverStories) => {
           if (Array.isArray(serverStories) && serverStories.length > 0) {
             applyStories(serverStories);
-          } else {
-            fetchRawGithubJson<Story[]>('stories.json')
-              .then((ghStories) => {
-                if (Array.isArray(ghStories) && ghStories.length > 0) {
-                  applyStories(ghStories);
-                }
-              })
-              .catch(() => {});
           }
         })
-        .catch(() => {
-          fetchRawGithubJson<Story[]>('stories.json')
-            .then((ghStories) => {
-              if (Array.isArray(ghStories) && ghStories.length > 0) {
-                applyStories(ghStories);
-              }
-            })
-            .catch(() => {});
-        });
+        .catch(() => {});
+
+      fetchRawGithubJson<Story[]>('stories.json')
+        .then((ghStories) => {
+          if (Array.isArray(ghStories) && ghStories.length > 0) {
+            applyStories(ghStories);
+          }
+        })
+        .catch(() => {});
     };
 
     syncRemoteStories();
@@ -2421,7 +2413,10 @@ export const subscribeToPublishedStories = (
  * Save or publish a story with multi-engine persistence (Local + Server API + Firestore).
  * Guarantees zero hangs, immediate local persistence, and background cloud synchronization.
  */
-export const publishStory = async (story: Story): Promise<void> => {
+export const publishStory = async (story: Story): Promise<{
+  success: boolean;
+  github: { attempted: boolean; success: boolean; error?: string; commitUrl?: string };
+}> => {
   const nowIso = new Date().toISOString();
 
   // 1. If previously deleted, unmark deleted in localStorage
@@ -2530,17 +2525,31 @@ export const publishStory = async (story: Story): Promise<void> => {
 
   // C. GitHub Repository direct commit (if token configured and autoSync is enabled)
   const ghConfig = getGithubConfig();
+  const ghCommitResult: { attempted: boolean; success: boolean; error?: string; commitUrl?: string } = {
+    attempted: false,
+    success: false,
+  };
+
   if (ghConfig.token && ghConfig.autoSync) {
+    ghCommitResult.attempted = true;
     const updatedStories = getStoredStories();
-    syncTasks.push(
-      commitGithubDataFile('stories.json', updatedStories, `Cập nhật tác phẩm: ${cleanStory.title} [skip ci]`).catch((err) => {
-        console.warn('[GitHubSync] Story commit note:', err);
+    const ghTask = commitGithubDataFile('stories.json', updatedStories, `Cập nhật tác phẩm: ${cleanStory.title} [skip ci]`)
+      .then((res) => {
+        ghCommitResult.success = res.success;
+        ghCommitResult.error = res.error;
+        ghCommitResult.commitUrl = res.commitUrl;
       })
-    );
+      .catch((err) => {
+        ghCommitResult.success = false;
+        ghCommitResult.error = err?.message || 'Lỗi commit GitHub API';
+        console.warn('[GitHubSync] Story commit note:', err);
+      });
+    syncTasks.push(ghTask);
   }
 
   // Safely wait for background tasks without hanging
   await Promise.allSettled(syncTasks);
+  return { success: true, github: ghCommitResult };
 };
 
 /**
@@ -2675,25 +2684,17 @@ export const subscribeToAllChapters = (
         .then((chaptersMap) => {
           if (chaptersMap && typeof chaptersMap === 'object' && Object.keys(chaptersMap).length > 0) {
             applyChaptersMap(chaptersMap);
-          } else {
-            fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
-              .then((ghMap) => {
-                if (ghMap && typeof ghMap === 'object') {
-                  applyChaptersMap(ghMap);
-                }
-              })
-              .catch(() => {});
           }
         })
-        .catch(() => {
-          fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
-            .then((ghMap) => {
-              if (ghMap && typeof ghMap === 'object') {
-                applyChaptersMap(ghMap);
-              }
-            })
-            .catch(() => {});
-        });
+        .catch(() => {});
+
+      fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+        .then((ghMap) => {
+          if (ghMap && typeof ghMap === 'object') {
+            applyChaptersMap(ghMap);
+          }
+        })
+        .catch(() => {});
     };
 
     syncRemoteChapters();
@@ -2933,7 +2934,10 @@ export const subscribeToStoryChapters = (
  * Publish a new chapter or extra for a story with multi-engine persistence (Local + Server API + Firestore).
  * Guarantees immediate UI update and zero hanging promises.
  */
-export const publishChapter = async (chapter: Chapter): Promise<void> => {
+export const publishChapter = async (chapter: Chapter): Promise<{
+  success: boolean;
+  github: { attempted: boolean; success: boolean; error?: string; commitUrl?: string };
+}> => {
   const nowIso = new Date().toISOString();
 
   // 1. Sanitize all fields to eliminate undefined values
@@ -3062,20 +3066,42 @@ export const publishChapter = async (chapter: Chapter): Promise<void> => {
 
   // C. GitHub Repository direct commit (if token configured and autoSync is enabled)
   const ghConfig = getGithubConfig();
+  const ghCommitResult: { attempted: boolean; success: boolean; error?: string; commitUrl?: string } = {
+    attempted: false,
+    success: false,
+  };
+
   if (ghConfig.token && ghConfig.autoSync) {
-    const fullChaptersCache = getLiveChaptersRuntimeCache();
-    syncTasks.push(
-      commitGithubDataFile(
-        'chapters.json',
-        fullChaptersCache,
-        `Cập nhật chương ${cleanChapter.chapterNumber}: ${cleanChapter.title} (${cleanChapter.storyId}) [skip ci]`
-      ).catch((err) => {
-        console.warn('[GitHubSync] Chapter commit note:', err);
+    ghCommitResult.attempted = true;
+    const stories = getStoredStories();
+    const rawChapters = getLiveChaptersRuntimeCache();
+    const fullChaptersMap: Record<string, Chapter[]> = {};
+    stories.forEach((s) => {
+      fullChaptersMap[s.id] = rawChapters[s.id] || getStoryChapters(s.id) || [];
+    });
+    fullChaptersMap[cleanChapter.storyId] = allChapters;
+    if (aliasId) fullChaptersMap[aliasId] = allChapters;
+
+    const ghTask = commitGithubDataFile(
+      'chapters.json',
+      fullChaptersMap,
+      `Cập nhật chương ${cleanChapter.chapterNumber}: ${cleanChapter.title} (${cleanChapter.storyId}) [skip ci]`
+    )
+      .then((res) => {
+        ghCommitResult.success = res.success;
+        ghCommitResult.error = res.error;
+        ghCommitResult.commitUrl = res.commitUrl;
       })
-    );
+      .catch((err) => {
+        ghCommitResult.success = false;
+        ghCommitResult.error = err?.message || 'Lỗi commit GitHub API';
+        console.warn('[GitHubSync] Chapter commit note:', err);
+      });
+    syncTasks.push(ghTask);
   }
 
   await Promise.allSettled(syncTasks);
+  return { success: true, github: ghCommitResult };
 };
 
 /**

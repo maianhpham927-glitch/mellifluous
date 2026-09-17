@@ -77,6 +77,18 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 // Ensures Firestore network is always active and user content writes always execute.
 // ============================================================================
 
+// Auto-detect project ID change: if project changed (e.g. to new user account), reset enabled flag to true and clear localQuotaExhausted!
+if (typeof window !== 'undefined') {
+  try {
+    const lastPid = localStorage.getItem('mel_firestore_project_id');
+    const currentPid = resolvedFirebaseConfig.projectId;
+    if (currentPid && lastPid !== currentPid) {
+      localStorage.setItem('mel_firestore_project_id', currentPid);
+      localStorage.setItem('mel_firestore_enabled', 'true');
+    }
+  } catch {}
+}
+
 export const isFirestoreEnabled = (): boolean => {
   if (typeof window === 'undefined') return false;
   try {

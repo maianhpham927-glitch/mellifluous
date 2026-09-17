@@ -78,9 +78,19 @@ export const saveGithubConfig = (config: Partial<GithubConfig>): GithubConfig =>
  */
 function utf8ToBase64(str: string): string {
   try {
-    return window.btoa(unescape(encodeURIComponent(str)));
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+    }
+    return window.btoa(bin);
   } catch {
-    return window.btoa(str);
+    try {
+      return window.btoa(unescape(encodeURIComponent(str)));
+    } catch {
+      return window.btoa(str);
+    }
   }
 }
 
@@ -89,9 +99,19 @@ function utf8ToBase64(str: string): string {
  */
 function base64ToUtf8(b64: string): string {
   try {
-    return decodeURIComponent(escape(window.atob(b64.replace(/\s/g, ''))));
+    const cleanB64 = b64.replace(/\s/g, '');
+    const binary = window.atob(cleanB64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
   } catch {
-    return window.atob(b64);
+    try {
+      return decodeURIComponent(escape(window.atob(b64.replace(/\s/g, ''))));
+    } catch {
+      return window.atob(b64);
+    }
   }
 }
 
@@ -101,8 +121,8 @@ function base64ToUtf8(b64: string): string {
  */
 export async function fetchRawGithubJson<T>(filename: string): Promise<T | null> {
   const config = getGithubConfig();
-  const repo = config.repo || DEFAULT_REPO;
-  const branch = config.branch || DEFAULT_BRANCH;
+  const repo = (config.repo || DEFAULT_REPO).trim();
+  const branch = (config.branch || DEFAULT_BRANCH).trim();
 
   // Add cache buster to guarantee freshest data on every fetch
   const cacheBuster = Date.now();
@@ -113,6 +133,7 @@ export async function fetchRawGithubJson<T>(filename: string): Promise<T | null>
       headers: {
         Accept: 'application/json',
       },
+      cache: 'no-store',
     });
 
     if (res.ok) {
@@ -123,7 +144,28 @@ export async function fetchRawGithubJson<T>(filename: string): Promise<T | null>
     console.warn(`[GitHubSync] Could not fetch raw ${filename} from GitHub:`, err);
   }
 
-  // Fallback 1: Local /data/ in deployed build
+  // Fallback 1: Direct GitHub Contents API if token is configured
+  if (config.token) {
+    try {
+      const apiUrl = `https://api.github.com/repos/${repo}/contents/data/${filename}?ref=${encodeURIComponent(branch)}&_t=${cacheBuster}`;
+      const apiRes = await fetch(apiUrl, {
+        headers: {
+          Authorization: `Bearer ${config.token.trim()}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      if (apiRes.ok) {
+        const fileObj = await apiRes.json();
+        if (fileObj.content) {
+          const decoded = base64ToUtf8(fileObj.content);
+          return JSON.parse(decoded) as T;
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback 2: Local /public/data/ or /data/ in deployed build
   try {
     const isGhActions = typeof window !== 'undefined' && window.location.pathname.includes('/mellifluous/');
     const localBasePath = isGhActions ? '/mellifluous/data/' : '/data/';
@@ -145,33 +187,44 @@ export async function commitGithubDataFile(
   commitMessage?: string
 ): Promise<{ success: boolean; commitUrl?: string; error?: string }> {
   const config = getGithubConfig();
-  if (!config.token) {
+  const cleanToken = (config.token || '').trim();
+  if (!cleanToken) {
     return {
       success: false,
       error: 'Chưa cấu hình GitHub Token. Vui lòng nhập Personal Access Token trong tab "Lưu trữ & Đồng bộ".',
     };
   }
 
-  const repo = config.repo || DEFAULT_REPO;
-  const branch = config.branch || DEFAULT_BRANCH;
+  const repo = (config.repo || DEFAULT_REPO).trim();
+  const branch = (config.branch || DEFAULT_BRANCH).trim();
   const path = `data/${filename}`;
   const apiUrl = `https://api.github.com/repos/${repo}/contents/${path}`;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${cleanToken}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
 
   try {
     // 1. Get existing file SHA if it exists
     let existingSha: string | undefined = undefined;
     try {
-      const getRes = await fetch(`${apiUrl}?ref=${branch}`, {
-        headers: {
-          Authorization: `Bearer ${config.token}`,
-          Accept: 'application/vnd.github+json',
-        },
+      const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(branch)}`, {
+        headers,
       });
       if (getRes.ok) {
         const fileInfo = await getRes.json();
         existingSha = fileInfo.sha;
+      } else if (getRes.status === 401) {
+        return {
+          success: false,
+          error: 'GitHub Token không hợp lệ hoặc đã hết hạn (HTTP 401 Bad Credentials).',
+        };
       }
-    } catch {}
+    } catch (e: any) {
+      console.warn('[GitHubSync] Note checking existing file SHA:', e);
+    }
 
     // 2. Prepare payload
     const jsonString = JSON.stringify(content, null, 2);
@@ -191,8 +244,7 @@ export async function commitGithubDataFile(
     const putRes = await fetch(apiUrl, {
       method: 'PUT',
       headers: {
-        Authorization: `Bearer ${config.token}`,
-        Accept: 'application/vnd.github+json',
+        ...headers,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
@@ -200,7 +252,18 @@ export async function commitGithubDataFile(
 
     if (!putRes.ok) {
       const errorJson = await putRes.json().catch(() => ({}));
-      const errorMsg = errorJson.message || `Lỗi GitHub API: HTTP ${putRes.status}`;
+      let errorMsg = errorJson.message || `Lỗi GitHub API: HTTP ${putRes.status}`;
+      if (putRes.status === 404) {
+        errorMsg = `Không tìm thấy repository "${repo}" hoặc Token không có quyền truy cập repository này (HTTP 404).`;
+      } else if (putRes.status === 401) {
+        errorMsg = `GitHub Token không hợp lệ hoặc không có quyền (HTTP 401).`;
+      } else if (putRes.status === 409) {
+        errorMsg = `Xung đột phiên bản tệp SHA trên GitHub (HTTP 409). Vui lòng thử lại.`;
+      } else if (putRes.status === 403) {
+        errorMsg = `Token không có quyền ghi ("Contents: Read and write") vào kho lưu trữ (HTTP 403).`;
+      } else if (putRes.status === 422) {
+        errorMsg = `Lỗi định dạng commit hoặc nhánh "${branch}" không tồn tại (HTTP 422: ${errorJson.message || ''}).`;
+      }
       return {
         success: false,
         error: errorMsg,
@@ -210,6 +273,29 @@ export async function commitGithubDataFile(
     const result = await putRes.json();
     saveGithubConfig({ lastSyncTime: new Date().toISOString() });
 
+    // Also attempt background sync for public/data if relevant (non-blocking)
+    try {
+      const publicPath = `public/data/${filename}`;
+      const publicApiUrl = `https://api.github.com/repos/${repo}/contents/${publicPath}`;
+      let pubSha: string | undefined = undefined;
+      const pubGet = await fetch(`${publicApiUrl}?ref=${encodeURIComponent(branch)}`, { headers });
+      if (pubGet.ok) {
+        const pubInfo = await pubGet.json();
+        pubSha = pubInfo.sha;
+      }
+      const pubPayload: any = {
+        message: `Đồng bộ public copy ${filename} [skip ci]`,
+        content: base64Content,
+        branch: branch,
+      };
+      if (pubSha) pubPayload.sha = pubSha;
+      await fetch(publicApiUrl, {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(pubPayload),
+      });
+    } catch {}
+
     return {
       success: true,
       commitUrl: result.commit?.html_url,
@@ -218,6 +304,49 @@ export async function commitGithubDataFile(
     return {
       success: false,
       error: err?.message || 'Không thể kết nối tới GitHub API',
+    };
+  }
+}
+
+/**
+ * Perform a live test write commit to verify token has full write access
+ */
+export async function testGithubWrite(): Promise<{
+  success: boolean;
+  message: string;
+  commitUrl?: string;
+}> {
+  const config = getGithubConfig();
+  if (!config.token) {
+    return {
+      success: false,
+      message: 'Chưa có GitHub Token. Vui lòng dán Personal Access Token vào ô bên dưới.',
+    };
+  }
+
+  const testPayload = {
+    test: true,
+    clientTime: new Date().toISOString(),
+    generator: 'Mellifluous Studio Write Permission Test',
+    status: 'ok',
+  };
+
+  const res = await commitGithubDataFile(
+    '.sync-test.json',
+    testPayload,
+    'Kiểm tra quyền ghi GitHub từ Mellifluous Studio [skip ci]'
+  );
+
+  if (res.success) {
+    return {
+      success: true,
+      message: `Quyền ghi thành công! Token có quyền cam kết trực tiếp vào nhánh ${config.branch || DEFAULT_BRANCH}.`,
+      commitUrl: res.commitUrl,
+    };
+  } else {
+    return {
+      success: false,
+      message: `Thử nghiệm ghi thất bại: ${res.error}`,
     };
   }
 }
@@ -233,19 +362,23 @@ export async function testGithubConnection(): Promise<{
   message: string;
 }> {
   const config = getGithubConfig();
-  if (!config.token) {
+  const cleanToken = (config.token || '').trim();
+  if (!cleanToken) {
     return {
       success: false,
-      message: 'Chưa có GitHub Token',
+      message: 'Chưa có GitHub Token. Vui lòng nhập Personal Access Token.',
     };
   }
+
+  const repo = (config.repo || DEFAULT_REPO).trim();
 
   try {
     // 1. Check user info
     const userRes = await fetch('https://api.github.com/user', {
       headers: {
-        Authorization: `Bearer ${config.token}`,
+        Authorization: `Bearer ${cleanToken}`,
         Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
       },
     });
 
@@ -253,7 +386,7 @@ export async function testGithubConnection(): Promise<{
       if (userRes.status === 401) {
         return {
           success: false,
-          message: 'GitHub Token không hợp lệ hoặc đã hết hạn (401 Unauthorized)',
+          message: 'GitHub Token không hợp lệ hoặc đã hết hạn (401 Bad Credentials)',
         };
       }
       return {
@@ -266,23 +399,31 @@ export async function testGithubConnection(): Promise<{
     const username = userData.login;
 
     // 2. Check repo access
-    const repoRes = await fetch(`https://api.github.com/repos/${config.repo}`, {
+    const repoRes = await fetch(`https://api.github.com/repos/${repo}`, {
       headers: {
-        Authorization: `Bearer ${config.token}`,
+        Authorization: `Bearer ${cleanToken}`,
         Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
       },
     });
 
     if (!repoRes.ok) {
+      if (repoRes.status === 404) {
+        return {
+          success: false,
+          username,
+          message: `Không tìm thấy repository "${repo}". Nếu repo là Private, hãy đảm bảo Token có quyền truy cập vào repo này.`,
+        };
+      }
       return {
         success: false,
         username,
-        message: `Không tìm thấy hoặc không có quyền truy cập repository: ${config.repo}`,
+        message: `Không thể truy cập repository ${repo} (HTTP ${repoRes.status})`,
       };
     }
 
     const repoData = await repoRes.json();
-    const canWrite = repoData.permissions?.push !== false;
+    const canWrite = repoData.permissions?.push === true || repoData.permissions?.admin === true;
 
     return {
       success: true,
@@ -290,8 +431,8 @@ export async function testGithubConnection(): Promise<{
       repoName: repoData.full_name,
       canWrite,
       message: canWrite
-        ? `Đã kết nối thành công với kho lưu trữ ${repoData.full_name} (@${username})`
-        : `Đã kết nối nhưng tài khoản @${username} chỉ có quyền đọc (Read-only)`,
+        ? `Đã kết nối thành công với kho lưu trữ ${repoData.full_name} (@${username}). Tài khoản có đầy đủ quyền Ghi (Push/Write)!`
+        : `Đã kết nối với @${username}, nhưng tài khoản CHỈ CÓ QUYỀN ĐỌC (Read-only). Cần cấp quyền "Contents: Read and write" trong Token!`,
     };
   } catch (err: any) {
     return {

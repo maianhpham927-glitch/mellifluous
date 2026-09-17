@@ -204,8 +204,16 @@ export const AuthorEditChapterTab: React.FC<AuthorEditChapterTabProps> = ({
         partType,
       };
 
-      await publishChapter(updatedChapter);
-      onFeedback('success', `Đã lưu cập nhật "${updatedChapter.title}" thành công!`);
+      const pubResult = await publishChapter(updatedChapter);
+      if (pubResult?.github?.attempted) {
+        if (pubResult.github.success) {
+          onFeedback('success', `Đã lưu cập nhật "${updatedChapter.title}" và đẩy lên GitHub!`);
+        } else {
+          onFeedback('error', `Đã lưu chương, nhưng đồng bộ GitHub gặp lỗi: ${pubResult.github.error}`);
+        }
+      } else {
+        onFeedback('success', `Đã lưu cập nhật "${updatedChapter.title}" thành công!`);
+      }
 
       // Refresh list
       const refreshed = getStoryChapters(selectedStoryId);

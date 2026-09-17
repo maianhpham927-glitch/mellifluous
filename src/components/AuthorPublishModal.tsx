@@ -290,8 +290,16 @@ export const AuthorPublishModal: React.FC<AuthorPublishModalProps> = ({
         featured: true,
       };
 
-      await publishStory(newStory);
-      showFeedback('success', `Đã xuất bản tác phẩm "${newStory.title}" thành công! Lượt xem bắt đầu từ 0.`);
+      const pubResult = await publishStory(newStory);
+      if (pubResult?.github?.attempted) {
+        if (pubResult.github.success) {
+          showFeedback('success', `Đã xuất bản tác phẩm "${newStory.title}" và đẩy lên GitHub thành công!`);
+        } else {
+          showFeedback('error', `Đã lưu truyện thành công, nhưng đồng bộ GitHub gặp lỗi: ${pubResult.github.error}`);
+        }
+      } else {
+        showFeedback('success', `Đã xuất bản tác phẩm "${newStory.title}" thành công! Lượt xem bắt đầu từ 0.`);
+      }
 
       setStoryTitle('');
       setStoryOriginalTitle('');
@@ -338,8 +346,16 @@ export const AuthorPublishModal: React.FC<AuthorPublishModalProps> = ({
         partType,
       };
 
-      await publishChapter(newChapter);
-      showFeedback('success', `Đã đăng thành công "${newChapter.title}"!`);
+      const pubResult = await publishChapter(newChapter);
+      if (pubResult?.github?.attempted) {
+        if (pubResult.github.success) {
+          showFeedback('success', `Đã đăng thành công "${newChapter.title}" và đẩy lên GitHub!`);
+        } else {
+          showFeedback('error', `Đã lưu chương thành công, nhưng đồng bộ GitHub gặp lỗi: ${pubResult.github.error}`);
+        }
+      } else {
+        showFeedback('success', `Đã đăng thành công "${newChapter.title}"!`);
+      }
 
       setChapterTitle('');
       setChapterContent('');
