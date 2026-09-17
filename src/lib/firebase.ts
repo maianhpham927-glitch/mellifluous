@@ -77,21 +77,34 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 // Ensures Firestore network is always active and user content writes always execute.
 // ============================================================================
 
-// Clean up any stale quota locks from previous sessions
-if (typeof window !== 'undefined') {
+export const isFirestoreEnabled = (): boolean => {
+  if (typeof window === 'undefined') return false;
   try {
-    sessionStorage.removeItem('mel_fs_quota_exceeded');
-    localStorage.removeItem('mel_fs_quota_exceeded');
-  } catch {}
-  try {
-    enableNetwork(db).catch(() => {});
-  } catch {}
-}
+    const saved = localStorage.getItem('mel_firestore_enabled');
+    // Default to false because current project's free quota is exhausted
+    return saved === 'true';
+  } catch {
+    return false;
+  }
+};
 
-export const isFirestoreQuotaExhausted = (): boolean => false;
+export const setFirestoreEnabled = (enabled: boolean) => {
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('mel_firestore_enabled', enabled ? 'true' : 'false');
+    } catch {}
+  }
+};
+
+let localQuotaExhausted = !isFirestoreEnabled();
+
+export const isFirestoreQuotaExhausted = (): boolean => {
+  return !isFirestoreEnabled() || localQuotaExhausted;
+};
 
 export const markFirestoreQuotaExhausted = () => {
-  console.warn('[Firestore] Notice: Write operation quota warning received from Google Cloud.');
+  localQuotaExhausted = true;
+  console.warn('[Firestore] Notice: Write operation quota warning received from Google Cloud. Switched to GitHub / Server mode.');
 };
 
 export const checkAndHandleQuotaError = (err: any): boolean => {
@@ -102,9 +115,11 @@ export const checkAndHandleQuotaError = (err: any): boolean => {
     code === 'resource-exhausted' ||
     msg.includes('resource-exhausted') ||
     msg.includes('Quota limit exceeded') ||
-    msg.includes('Free daily write units')
+    msg.includes('Free daily write units') ||
+    msg.includes('Quota exceeded')
   ) {
-    console.warn('[Firestore] Daily free write quota reached on project. Attempting graceful fallback:', err);
+    localQuotaExhausted = true;
+    console.warn('[Firestore] Daily free write quota reached on project. Operating smoothly with GitHub / Server backup:', err);
     return true;
   }
   return false;

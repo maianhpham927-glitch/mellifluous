@@ -1,0 +1,41 @@
+[
+  {
+    "id": "sample-letter-1",
+    "sender": "Hạ Mộc",
+    "avatar": "🌸",
+    "content": "Đọc truyện của Mel từ những ngày đầu bên nhà cũ. Mỗi câu chữ đều dịu dàng như một tách trà mật ong ngày mưa. Chúc Mel luôn an yên và giữ được ngọn lửa đam mê nhé!",
+    "type": "public",
+    "tag": "🌸 Lời chúc & Cảm ơn",
+    "time": "2 ngày trước",
+    "createdAt": "2026-09-15T12:01:15.552Z",
+    "likes": 18,
+    "replyFromMel": "Cảm ơn Hạ Mộc thật nhiều nha! Những lời động viên của bạn là động lực lớn nhất để Mel tiếp tục dịch thêm nhiều bộ truyện ấm áp.",
+    "repliedAt": "2026-09-16T12:01:15.552Z",
+    "repliedBy": "Mellifluous (Tác giả)"
+  },
+  {
+    "id": "sample-letter-2",
+    "sender": "Gió Tháng Bảy",
+    "avatar": "🍃",
+    "content": "Mình cực kỳ thích cách Mel dịch đoạn đối thoại của Thẩm Hoài An và Nhĩ Nguyệt trong bức thư gửi mây trời. Rất mượt mà và xúc động!",
+    "type": "public",
+    "tag": "📖 Đề xuất truyện mới",
+    "time": "4 ngày trước",
+    "createdAt": "2026-09-13T12:01:15.552Z",
+    "likes": 12,
+    "replyFromMel": "Mel cũng rất thích đoạn ấy, lúc dịch mà cay cay sống mũi luôn á 🌸",
+    "repliedAt": "2026-09-14T12:01:15.552Z",
+    "repliedBy": "Mellifluous (Tác giả)"
+  },
+  {
+    "id": "sample-letter-3",
+    "sender": "Trần Thảo Ly",
+    "avatar": "☕",
+    "content": "Thuyền nhỏ ơi, sau những giờ làm căng thẳng được ngả lưng nghe playlist mùa hạ và đọc truyện ở đây thật sự là một niềm hạnh phúc dịu êm.",
+    "type": "public",
+    "tag": "☕ Tâm sự mùa hè",
+    "time": "5 ngày trước",
+    "createdAt": "2026-09-12T12:01:15.552Z",
+    "likes": 24
+  }
+]

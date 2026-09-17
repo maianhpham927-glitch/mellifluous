@@ -32,6 +32,7 @@ import {
   RefreshCw,
   Search,
   Plus,
+  Database,
 } from 'lucide-react';
 import {
   publishStory,
@@ -49,6 +50,7 @@ import { AuthorEditChapterTab } from './author/AuthorEditChapterTab';
 import { AuthorAnnouncementsTab } from './author/AuthorAnnouncementsTab';
 import { AuthorGenresTab } from './author/AuthorGenresTab';
 import { AuthorCollaboratorsTab } from './author/AuthorCollaboratorsTab';
+import { AuthorSyncTab } from './author/AuthorSyncTab';
 import { getCustomGenres, subscribeToCustomGenres, getStoryGenres, addCustomGenre } from '../utils/genreManager';
 
 interface AuthorPublishModalProps {
@@ -101,7 +103,8 @@ export const AuthorPublishModal: React.FC<AuthorPublishModalProps> = ({
     | 'music'
     | 'letters'
     | 'collaborators'
-    | 'manage';
+    | 'manage'
+    | 'sync';
 
   const [activeTab, setActiveTab] = useState<TabType>('newStory');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -659,6 +662,19 @@ export const AuthorPublishModal: React.FC<AuthorPublishModalProps> = ({
             >
               <Layers className="w-3.5 h-3.5" />
               <span>Quản lý chung ({stories.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('sync')}
+              className={`shrink-0 py-2 px-3 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                activeTab === 'sync'
+                  ? 'bg-pink-500 text-white shadow-xs'
+                  : 'text-stone-700 dark:text-stone-200 hover:bg-pink-100/60 dark:hover:bg-stone-800 hover:text-pink-700 dark:hover:text-pink-300'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5 text-pink-600 dark:text-pink-400" />
+              <span>Lưu trữ & Đồng bộ</span>
             </button>
           </div>
         </div>
@@ -1528,6 +1544,11 @@ export const AuthorPublishModal: React.FC<AuthorPublishModalProps> = ({
                 </div>
               )}
             </div>
+          )}
+
+          {/* TAB 11: LƯU TRỮ & ĐỒNG BỘ GITHUB PAGES */}
+          {activeTab === 'sync' && (
+            <AuthorSyncTab onFeedback={showFeedback} onRefreshAllData={onStoriesUpdated} />
           )}
         </div>
       </div>

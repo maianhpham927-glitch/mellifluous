@@ -36,6 +36,7 @@ import {
 import { buildApiUrl } from './apiConfig';
 import { bgmEngine } from '../utils/audioPlayer';
 import { updateGenresFromRemote } from '../utils/genreManager';
+import { getGithubConfig, commitGithubDataFile, fetchRawGithubJson } from './githubSyncService';
 
 /**
  * Recursively removes all keys with `undefined` value from objects/arrays,
@@ -96,6 +97,9 @@ let isFirestoreQuotaBlocked = false;
 let quotaBlockedUntil = 0;
 
 export const checkIsFirestoreBlocked = (): boolean => {
+  if (isFirestoreQuotaExhausted()) {
+    return true;
+  }
   if (isFirestoreQuotaBlocked && Date.now() < quotaBlockedUntil) {
     return true;
   }
@@ -889,6 +893,17 @@ export const startActiveReaderHeartbeat = (onCountChange: (count: number) => voi
 export const subscribeToGlobalStats = (
   callback: (stats: GlobalRealtimeStats) => void
 ): (() => void) => {
+  if (checkIsFirestoreBlocked()) {
+    callback({
+      totalVisits: 0,
+      activeReaders: Math.max(1, currentLiveActiveReaders),
+      totalFollowers: 0,
+      totalComments: 0,
+      totalLikes: 0,
+    });
+    return () => {};
+  }
+
   const statsDocRef = doc(db, 'site_stats', STATS_DOC_ID);
   return onSnapshot(
     statsDocRef,
@@ -968,6 +983,18 @@ export const subscribeToStoryStats = (
   initialLikes: number = 0,
   callback: (stats: StoryRealtimeStats) => void
 ): (() => void) => {
+  if (checkIsFirestoreBlocked()) {
+    callback({
+      views: initialViews || 0,
+      likes: initialLikes || 0,
+      followers: 0,
+      ratingSum: 0,
+      ratingCount: 0,
+      commentCount: 0,
+    });
+    return () => {};
+  }
+
   const storyDocRef = doc(db, 'story_stats', storyId);
 
   return onSnapshot(
@@ -2139,63 +2166,90 @@ export const subscribeToPublishedStories = (
   // 2. Register for local broadcasts
   activeStorySubscribers.add(callback);
 
-  // 3. Immediately pull from server API for multi-device cross-session sync
+  // 3. Multi-tier pull (Server API -> GitHub Raw CDN -> Bundled static)
+  let pollInterval: any = null;
   if (typeof window !== 'undefined') {
-    fetch('/api/stories')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((serverStories) => {
-        if (Array.isArray(serverStories) && serverStories.length > 0) {
-          const current = getStoredStories();
-          const currentMap = new Map(current.map((s) => [s.id, s]));
-          let changed = false;
-          let localDel = new Set<string>();
-          try {
-            const raw = localStorage.getItem('mel_deleted_story_ids');
-            if (raw) localDel = new Set(JSON.parse(raw));
-          } catch {}
+    const syncRemoteStories = () => {
+      const applyStories = (incoming: Story[]) => {
+        if (!Array.isArray(incoming) || incoming.length === 0) return;
+        const current = getStoredStories();
+        const currentMap = new Map(current.map((s) => [s.id, s]));
+        let changed = false;
+        let localDel = new Set<string>();
+        try {
+          const raw = localStorage.getItem('mel_deleted_story_ids');
+          if (raw) localDel = new Set(JSON.parse(raw));
+        } catch {}
 
-          for (const s of serverStories) {
-            if (localDel.has(s.id)) continue;
-            const existing = currentMap.get(s.id);
-            if (!existing) {
-              currentMap.set(s.id, s);
+        for (const s of incoming) {
+          if (localDel.has(s.id)) continue;
+          const existing = currentMap.get(s.id);
+          if (!existing) {
+            currentMap.set(s.id, s);
+            changed = true;
+          } else {
+            const existingTime = parseSafeTimestamp(existing.updatedAt);
+            const incomingTime = parseSafeTimestamp(s.updatedAt);
+            const isDifferent =
+              s.title !== existing.title ||
+              s.completedChapters !== existing.completedChapters ||
+              s.totalChapters !== existing.totalChapters ||
+              s.status !== existing.status ||
+              s.coverImage !== existing.coverImage ||
+              s.hasPassword !== existing.hasPassword ||
+              s.passwordKey !== existing.passwordKey ||
+              s.summary !== existing.summary;
+
+            if (incomingTime >= existingTime || isDifferent) {
+              currentMap.set(s.id, {
+                ...existing,
+                ...s,
+                views: Math.max(Number(existing.views) || 0, Number(s.views) || 0),
+                likes: Math.max(Number(existing.likes) || 0, Number(s.likes) || 0),
+                completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(s.completedChapters) || 0),
+              });
               changed = true;
-            } else {
-              const existingTime = parseSafeTimestamp(existing.updatedAt);
-              const incomingTime = parseSafeTimestamp(s.updatedAt);
-              const isDifferent =
-                s.title !== existing.title ||
-                s.completedChapters !== existing.completedChapters ||
-                s.totalChapters !== existing.totalChapters ||
-                s.status !== existing.status ||
-                s.coverImage !== existing.coverImage ||
-                s.hasPassword !== existing.hasPassword ||
-                s.passwordKey !== existing.passwordKey ||
-                s.summary !== existing.summary;
-
-              if (incomingTime >= existingTime || isDifferent) {
-                currentMap.set(s.id, {
-                  ...existing,
-                  ...s,
-                  views: Math.max(Number(existing.views) || 0, Number(s.views) || 0),
-                  likes: Math.max(Number(existing.likes) || 0, Number(s.likes) || 0),
-                  completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(s.completedChapters) || 0),
-                });
-                changed = true;
-              }
             }
           }
-          if (changed) {
-            const merged = Array.from(currentMap.values());
-            try {
-              localStorage.setItem('mel_published_stories', JSON.stringify(merged));
-            } catch {}
-            callback(merged);
-            notifyStorySubscribers(merged);
-          }
         }
-      })
-      .catch(() => {});
+        if (changed) {
+          const merged = Array.from(currentMap.values());
+          try {
+            localStorage.setItem('mel_published_stories', JSON.stringify(merged));
+          } catch {}
+          callback(merged);
+          notifyStorySubscribers(merged);
+        }
+      };
+
+      fetch(buildApiUrl('/api/stories'))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((serverStories) => {
+          if (Array.isArray(serverStories) && serverStories.length > 0) {
+            applyStories(serverStories);
+          } else {
+            fetchRawGithubJson<Story[]>('stories.json')
+              .then((ghStories) => {
+                if (Array.isArray(ghStories) && ghStories.length > 0) {
+                  applyStories(ghStories);
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {
+          fetchRawGithubJson<Story[]>('stories.json')
+            .then((ghStories) => {
+              if (Array.isArray(ghStories) && ghStories.length > 0) {
+                applyStories(ghStories);
+              }
+            })
+            .catch(() => {});
+        });
+    };
+
+    syncRemoteStories();
+    pollInterval = setInterval(syncRemoteStories, 30000);
   }
 
   // 4. Connect to Firestore story_stats if quota is healthy
@@ -2357,6 +2411,7 @@ export const subscribeToPublishedStories = (
 
   return () => {
     activeStorySubscribers.delete(callback);
+    if (pollInterval) clearInterval(pollInterval);
     if (unsubFirestoreStats) unsubFirestoreStats();
     if (unsubFirestoreStories) unsubFirestoreStories();
   };
@@ -2473,6 +2528,17 @@ export const publishStory = async (story: Story): Promise<void> => {
     syncTasks.push(withTimeout(firestoreSync(), 2500).catch((err) => console.warn('Firestore story timeout:', err)));
   }
 
+  // C. GitHub Repository direct commit (if token configured and autoSync is enabled)
+  const ghConfig = getGithubConfig();
+  if (ghConfig.token && ghConfig.autoSync) {
+    const updatedStories = getStoredStories();
+    syncTasks.push(
+      commitGithubDataFile('stories.json', updatedStories, `Cập nhật tác phẩm: ${cleanStory.title} [skip ci]`).catch((err) => {
+        console.warn('[GitHubSync] Story commit note:', err);
+      })
+    );
+  }
+
   // Safely wait for background tasks without hanging
   await Promise.allSettled(syncTasks);
 };
@@ -2556,6 +2622,17 @@ export const deleteStory = async (storyId: string): Promise<void> => {
     delTasks.push(withTimeout(firestoreDelete(), 2500).catch((err) => console.warn('Firestore delete timeout:', err)));
   }
 
+  // C. GitHub Repository direct commit (if token configured and autoSync is enabled)
+  const ghConfig = getGithubConfig();
+  if (ghConfig.token && ghConfig.autoSync) {
+    const updatedStories = getStoredStories();
+    delTasks.push(
+      commitGithubDataFile('stories.json', updatedStories, `Xóa tác phẩm ID: ${storyId} [skip ci]`).catch((err) => {
+        console.warn('[GitHubSync] Story delete commit note:', err);
+      })
+    );
+  }
+
   await Promise.allSettled(delTasks);
 };
 
@@ -2570,11 +2647,11 @@ export const subscribeToAllChapters = (
   callback(getLiveChaptersRuntimeCache());
   activeAllChaptersSubscribers.add(callback);
 
-  // 2. Fetch from server API immediately for multi-device sync
+  // 2. Fetch from server API & GitHub Raw CDN for multi-device sync
+  let pollChaptersInterval: any = null;
   if (typeof window !== 'undefined') {
-    fetch('/api/chapters')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((chaptersMap) => {
+    const syncRemoteChapters = () => {
+      const applyChaptersMap = (chaptersMap: any) => {
         if (chaptersMap && typeof chaptersMap === 'object') {
           for (const [sId, chList] of Object.entries(chaptersMap as Record<string, Chapter[]>)) {
             if (Array.isArray(chList) && chList.length > 0) {
@@ -2591,8 +2668,36 @@ export const subscribeToAllChapters = (
           callback(fullCache);
           notifyAllChaptersSubscribers(fullCache);
         }
-      })
-      .catch(() => {});
+      };
+
+      fetch(buildApiUrl('/api/chapters'))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((chaptersMap) => {
+          if (chaptersMap && typeof chaptersMap === 'object' && Object.keys(chaptersMap).length > 0) {
+            applyChaptersMap(chaptersMap);
+          } else {
+            fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+              .then((ghMap) => {
+                if (ghMap && typeof ghMap === 'object') {
+                  applyChaptersMap(ghMap);
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {
+          fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+            .then((ghMap) => {
+              if (ghMap && typeof ghMap === 'object') {
+                applyChaptersMap(ghMap);
+              }
+            })
+            .catch(() => {});
+        });
+    };
+
+    syncRemoteChapters();
+    pollChaptersInterval = setInterval(syncRemoteChapters, 35000);
   }
 
   // 3. Listen to Firestore collection 'chapter_stats' if quota is healthy
@@ -2689,6 +2794,7 @@ export const subscribeToAllChapters = (
 
   return () => {
     activeAllChaptersSubscribers.delete(callback);
+    if (pollChaptersInterval) clearInterval(pollChaptersInterval);
     if (unsubFirestore) unsubFirestore();
   };
 };
@@ -2954,6 +3060,21 @@ export const publishChapter = async (chapter: Chapter): Promise<void> => {
     syncTasks.push(withTimeout(firestoreSync(), 2500).catch((err) => console.warn('Firestore chapter timeout:', err)));
   }
 
+  // C. GitHub Repository direct commit (if token configured and autoSync is enabled)
+  const ghConfig = getGithubConfig();
+  if (ghConfig.token && ghConfig.autoSync) {
+    const fullChaptersCache = getLiveChaptersRuntimeCache();
+    syncTasks.push(
+      commitGithubDataFile(
+        'chapters.json',
+        fullChaptersCache,
+        `Cập nhật chương ${cleanChapter.chapterNumber}: ${cleanChapter.title} (${cleanChapter.storyId}) [skip ci]`
+      ).catch((err) => {
+        console.warn('[GitHubSync] Chapter commit note:', err);
+      })
+    );
+  }
+
   await Promise.allSettled(syncTasks);
 };
 
@@ -3019,6 +3140,17 @@ export const deleteChapter = async (storyId: string, chapterId: string): Promise
 
   delTasks.push(withTimeout(firestoreDelete(), 10000).catch((err) => console.warn('Firestore delete chapter timeout:', err)));
 
+  // GitHub commit
+  const ghConfig = getGithubConfig();
+  if (ghConfig.token && ghConfig.autoSync) {
+    const fullChaptersCache = getLiveChaptersRuntimeCache();
+    delTasks.push(
+      commitGithubDataFile('chapters.json', fullChaptersCache, `Xóa chương ID: ${chapterId} [skip ci]`).catch((err) => {
+        console.warn('[GitHubSync] Chapter delete commit note:', err);
+      })
+    );
+  }
+
   await Promise.allSettled(delTasks);
 };
 
@@ -3034,57 +3166,90 @@ export const subscribeToAnnouncements = (
   // 2. Register active memory listener
   activeAnnouncementSubscribers.add(callback);
 
-  // 3. Immediately pull from Server API
+  // 3. Immediately pull from Server API with GitHub Raw fallback
+  let pollAnnInterval: any = null;
   if (typeof window !== 'undefined') {
-    fetch('/api/announcements')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((serverAnn) => {
-        if (Array.isArray(serverAnn) && serverAnn.length > 0) {
-          try {
-            localStorage.setItem('mel_announcements', JSON.stringify(serverAnn));
-          } catch {}
-          callback(serverAnn);
-        }
-      })
-      .catch(() => {});
+    const syncAnnouncements = () => {
+      fetch(buildApiUrl('/api/announcements'))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((serverAnn) => {
+          if (Array.isArray(serverAnn) && serverAnn.length > 0) {
+            try {
+              localStorage.setItem('mel_announcements', JSON.stringify(serverAnn));
+            } catch {}
+            callback(serverAnn);
+          } else {
+            fetchRawGithubJson<Announcement[]>('announcements.json')
+              .then((ghAnn) => {
+                if (Array.isArray(ghAnn) && ghAnn.length > 0) {
+                  try {
+                    localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
+                  } catch {}
+                  callback(ghAnn);
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {
+          fetchRawGithubJson<Announcement[]>('announcements.json')
+            .then((ghAnn) => {
+              if (Array.isArray(ghAnn) && ghAnn.length > 0) {
+                try {
+                  localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
+                } catch {}
+                callback(ghAnn);
+              }
+            })
+            .catch(() => {});
+        });
+    };
+
+    syncAnnouncements();
+    pollAnnInterval = setInterval(syncAnnouncements, 60000);
   }
 
-  // 4. Connect to Firestore
+  // 4. Connect to Firestore only if quota is healthy
   let unsubFirestore: (() => void) | null = null;
-  try {
-    const coll = collection(db, 'announcements');
-    const q = query(coll, orderBy('date', 'desc'), limit(20));
+  if (!checkIsFirestoreBlocked()) {
+    try {
+      const coll = collection(db, 'announcements');
+      const q = query(coll, orderBy('date', 'desc'), limit(20));
 
-    unsubFirestore = onSnapshot(
-      q,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const list: Announcement[] = [];
-          snapshot.forEach((d) => {
-            list.push({ ...(d.data() as Announcement), id: d.id });
-          });
-          try {
-            localStorage.setItem('mel_announcements', JSON.stringify(list));
-          } catch {}
-          callback(list);
+      unsubFirestore = onSnapshot(
+        q,
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const list: Announcement[] = [];
+            snapshot.forEach((d) => {
+              list.push({ ...(d.data() as Announcement), id: d.id });
+            });
+            try {
+              localStorage.setItem('mel_announcements', JSON.stringify(list));
+            } catch {}
+            callback(list);
+          }
+        },
+        (err) => {
+          flagFirestoreQuotaExceeded(err);
+          console.warn('Announcements snapshot warning:', err?.message || err);
         }
-      },
-      (err) => {
-        console.warn('Announcements snapshot warning:', err);
-      }
-    );
-  } catch (e) {
-    console.warn('Firestore announcement subscription error:', e);
+      );
+    } catch (e) {
+      flagFirestoreQuotaExceeded(e);
+      console.warn('Firestore announcement subscription error:', e);
+    }
   }
 
   return () => {
     activeAnnouncementSubscribers.delete(callback);
+    if (pollAnnInterval) clearInterval(pollAnnInterval);
     if (unsubFirestore) unsubFirestore();
   };
 };
 
 /**
- * Publish an announcement with dual persistence.
+ * Publish an announcement with multi-engine persistence.
  */
 export const publishAnnouncement = async (announcement: Announcement): Promise<void> => {
   const cleanAnn: Announcement = {
@@ -3096,11 +3261,12 @@ export const publishAnnouncement = async (announcement: Announcement): Promise<v
     isPinned: Boolean(announcement.isPinned),
   };
 
+  let updatedAnnouncements: Announcement[] = [];
   try {
     const current = getStoredAnnouncements();
-    const updated = [cleanAnn, ...current.filter((a) => a.id !== cleanAnn.id)];
-    localStorage.setItem('mel_announcements', JSON.stringify(updated));
-    notifyAnnouncementSubscribers(updated);
+    updatedAnnouncements = [cleanAnn, ...current.filter((a) => a.id !== cleanAnn.id)];
+    localStorage.setItem('mel_announcements', JSON.stringify(updatedAnnouncements));
+    notifyAnnouncementSubscribers(updatedAnnouncements);
   } catch (err) {
     console.warn('Local announcement save warning:', err);
   }
@@ -3117,16 +3283,32 @@ export const publishAnnouncement = async (announcement: Announcement): Promise<v
     })
   );
 
-  const firestoreSave = async () => {
-    try {
-      const noticeRef = doc(db, 'announcements', cleanAnn.id);
-      await setDoc(noticeRef, cleanAnn);
-    } catch (firestoreErr) {
-      console.warn('Firestore announcement save warning:', firestoreErr);
-    }
-  };
+  if (!checkIsFirestoreBlocked()) {
+    const firestoreSave = async () => {
+      try {
+        const noticeRef = doc(db, 'announcements', cleanAnn.id);
+        await setDoc(noticeRef, cleanAnn);
+      } catch (firestoreErr) {
+        flagFirestoreQuotaExceeded(firestoreErr);
+        console.warn('Firestore announcement save warning:', firestoreErr);
+      }
+    };
+    tasks.push(withTimeout(firestoreSave(), 3500).catch((err) => console.warn('Firestore announcement timeout:', err)));
+  }
 
-  tasks.push(withTimeout(firestoreSave(), 3500).catch((err) => console.warn('Firestore announcement timeout:', err)));
+  // GitHub Sync
+  const ghConfig = getGithubConfig();
+  if (ghConfig.token && ghConfig.autoSync) {
+    tasks.push(
+      commitGithubDataFile(
+        'announcements.json',
+        updatedAnnouncements,
+        `Cập nhật thông báo: ${cleanAnn.title} [skip ci]`
+      ).catch((err) => {
+        console.warn('[GitHubSync] Announcement commit note:', err);
+      })
+    );
+  }
 
   await Promise.allSettled(tasks);
 };
@@ -3135,26 +3317,43 @@ export const publishAnnouncement = async (announcement: Announcement): Promise<v
  * Delete an announcement with dual persistence.
  */
 export const deleteAnnouncement = async (announcementId: string): Promise<void> => {
+  let updatedAnn: Announcement[] = [];
   try {
     const current = getStoredAnnouncements();
-    const updated = current.filter((a) => a.id !== announcementId);
-    localStorage.setItem('mel_announcements', JSON.stringify(updated));
-    notifyAnnouncementSubscribers(updated);
+    updatedAnn = current.filter((a) => a.id !== announcementId);
+    localStorage.setItem('mel_announcements', JSON.stringify(updatedAnn));
+    notifyAnnouncementSubscribers(updatedAnn);
   } catch (err) {
     console.warn('Local announcement delete warning:', err);
   }
 
   const tasks: Promise<any>[] = [];
 
-  const firestoreDel = async () => {
-    try {
-      await deleteDoc(doc(db, 'announcements', announcementId));
-    } catch (firestoreErr) {
-      console.warn('Firestore announcement delete warning:', firestoreErr);
-    }
-  };
+  if (!checkIsFirestoreBlocked()) {
+    const firestoreDel = async () => {
+      try {
+        await deleteDoc(doc(db, 'announcements', announcementId));
+      } catch (firestoreErr) {
+        flagFirestoreQuotaExceeded(firestoreErr);
+        console.warn('Firestore announcement delete warning:', firestoreErr);
+      }
+    };
+    tasks.push(withTimeout(firestoreDel(), 3500).catch((err) => console.warn('Firestore delete announcement timeout:', err)));
+  }
 
-  tasks.push(withTimeout(firestoreDel(), 3500).catch((err) => console.warn('Firestore delete announcement timeout:', err)));
+  // GitHub Sync
+  const ghConfig = getGithubConfig();
+  if (ghConfig.token && ghConfig.autoSync) {
+    tasks.push(
+      commitGithubDataFile(
+        'announcements.json',
+        updatedAnn,
+        `Xóa thông báo ID: ${announcementId} [skip ci]`
+      ).catch((err) => {
+        console.warn('[GitHubSync] Announcement delete commit note:', err);
+      })
+    );
+  }
 
   await Promise.allSettled(tasks);
 };
@@ -3380,6 +3579,10 @@ export const subscribeToCollaborators = (
   // Emit local cache first for instant UI response
   const initial = getStoredCollaborators();
   callback(initial);
+
+  if (checkIsFirestoreBlocked()) {
+    return () => {};
+  }
 
   const docRef = doc(db, 'site_stats', 'collaborators');
   return onSnapshot(
@@ -3666,6 +3869,10 @@ export const subscribeToUserProfile = (
     const raw = localStorage.getItem(`mel_profile_${uid}`);
     if (raw) callback(JSON.parse(raw));
   } catch {}
+
+  if (checkIsFirestoreBlocked()) {
+    return () => {};
+  }
 
   const userDocRef = doc(db, USERS_COLLECTION, uid);
   return onSnapshot(

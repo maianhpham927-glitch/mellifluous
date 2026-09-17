@@ -6,9 +6,10 @@
 // 3. Google Drive / Dropbox audio (streamed & proxied via /api/proxy-audio with HTTP 206 Range support)
 // 4. Built-in sweet lofi piano melodies (synthesized into seamless WAV Audio Blobs)
 
-import { db, doc, setDoc, deleteDoc, onSnapshot, collection } from '../lib/firebase';
+import { db, doc, setDoc, deleteDoc, onSnapshot, collection, isFirestoreQuotaExhausted } from '../lib/firebase';
 import { saveAudioBlobToIDB, getAudioBlobFromIDB, deleteAudioBlobFromIDB } from './audioIndexedDB';
 import { buildApiUrl } from '../lib/apiConfig';
+import { fetchRawGithubJson } from '../lib/githubSyncService';
 import {
   uploadAudioToFirestore,
   downloadAudioFromFirestore,
@@ -501,6 +502,10 @@ class BackgroundMusicEngine {
   private initFirestoreSync() {
     this.pullServerPlaylist();
 
+    if (isFirestoreQuotaExhausted()) {
+      return;
+    }
+
     try {
       const playlistDoc = doc(db, 'site_stats', 'music_playlist');
       onSnapshot(
@@ -554,16 +559,27 @@ class BackgroundMusicEngine {
   }
 
   public async pullServerPlaylist() {
+    let loaded = false;
     try {
       const res = await fetch(buildApiUrl('/api/playlist'));
       if (res.ok) {
         const serverTracks = await res.json();
         if (Array.isArray(serverTracks) && serverTracks.length > 0) {
           this.mergeTracks(serverTracks);
+          loaded = true;
         }
       }
     } catch (err) {
       console.warn('Server playlist fetch note:', err);
+    }
+
+    if (!loaded) {
+      try {
+        const ghTracks = await fetchRawGithubJson<AudioTrack[]>('playlist.json');
+        if (Array.isArray(ghTracks) && ghTracks.length > 0) {
+          this.mergeTracks(ghTracks);
+        }
+      } catch {}
     }
   }
 

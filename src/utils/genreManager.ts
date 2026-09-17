@@ -1,5 +1,6 @@
-import { db, doc, getDoc, setDoc, onSnapshot } from '../lib/firebase';
+import { db, doc, getDoc, setDoc, onSnapshot, isFirestoreQuotaExhausted } from '../lib/firebase';
 import { buildApiUrl } from '../lib/apiConfig';
+import { fetchRawGithubJson } from '../lib/githubSyncService';
 
 export const DEFAULT_GENRES: string[] = [
   'Tất cả các thể loại mùa hè',
@@ -63,20 +64,32 @@ export const updateGenresFromRemote = (list: string[]) => {
   }
 };
 
-// Initial Server REST sync
+// Initial Remote sync (Server REST + GitHub Raw fallback)
 if (typeof window !== 'undefined') {
   fetch(buildApiUrl('/api/genres'))
     .then((r) => (r.ok ? r.json() : null))
     .then((list) => {
       if (Array.isArray(list) && list.length > 0) {
         saveLocal(list);
+      } else {
+        fetchRawGithubJson<string[]>('genres.json').then((ghList) => {
+          if (Array.isArray(ghList) && ghList.length > 0) {
+            saveLocal(ghList);
+          }
+        }).catch(() => {});
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      fetchRawGithubJson<string[]>('genres.json').then((ghList) => {
+        if (Array.isArray(ghList) && ghList.length > 0) {
+          saveLocal(ghList);
+        }
+      }).catch(() => {});
+    });
 }
 
-// Initial Firestore sync using site_stats (100% accessible across all clients)
-if (db) {
+// Initial Firestore sync using site_stats (only if not quota exhausted)
+if (db && !isFirestoreQuotaExhausted()) {
   try {
     const statsGenresDoc = doc(db, 'site_stats', 'genres');
     onSnapshot(
@@ -91,7 +104,7 @@ if (db) {
         }
       },
       (err) => {
-        console.warn('site_stats genres listener notice:', err.message);
+        console.warn('site_stats genres listener notice:', err?.message || err);
       }
     );
   } catch {}

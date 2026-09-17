@@ -1,0 +1,574 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Database,
+  Github,
+  Server,
+  Flame,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+  Download,
+  Upload,
+  ExternalLink,
+  ShieldCheck,
+  KeyRound,
+  GitBranch,
+  Layers,
+  Sparkles,
+  Info,
+  Check,
+  X,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
+import {
+  getGithubConfig,
+  saveGithubConfig,
+  testGithubConnection,
+  commitGithubDataFile,
+  fetchRawGithubJson,
+  GithubConfig,
+} from '../../lib/githubSyncService';
+import {
+  generateFullBackup,
+  downloadBackupFile,
+  restoreFromBackup,
+  MellifluousFullBackup,
+} from '../../lib/dataBackupService';
+import {
+  getLiveChaptersRuntimeCache,
+  getStoryChapters,
+  ANNOUNCEMENTS,
+} from '../../data/mockData';
+import { getStoredStories } from '../../lib/realtimeService';
+import {
+  isFirestoreEnabled,
+  setFirestoreEnabled,
+} from '../../lib/firebase';
+import { getApiBaseUrl, buildApiUrl } from '../../lib/apiConfig';
+import { Story, Chapter, Announcement } from '../../types';
+
+interface AuthorSyncTabProps {
+  onFeedback: (type: 'success' | 'error', text: string) => void;
+  onRefreshAllData?: () => void;
+}
+
+export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefreshAllData }) => {
+  // GitHub state
+  const [ghConfig, setGhConfig] = useState<GithubConfig>(() => getGithubConfig());
+  const [githubTokenInput, setGithubTokenInput] = useState<string>(() => getGithubConfig().token);
+  const [githubRepoInput, setGithubRepoInput] = useState<string>(() => getGithubConfig().repo);
+  const [githubBranchInput, setGithubBranchInput] = useState<string>(() => getGithubConfig().branch);
+  const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState<boolean>(() => getGithubConfig().autoSync);
+  const [showToken, setShowToken] = useState(false);
+  const [isTestingGithub, setIsTestingGithub] = useState(false);
+  const [githubTestResult, setGithubTestResult] = useState<{
+    success: boolean;
+    message: string;
+    username?: string;
+  } | null>(null);
+
+  // Server state
+  const [serverStatus, setServerStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
+  const [customBackendUrl, setCustomBackendUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem('mel_backend_api_url') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  // Firestore state
+  const [firestoreActive, setFirestoreActive] = useState<boolean>(() => isFirestoreEnabled());
+
+  // Action loading states
+  const [isSyncingToGithub, setIsSyncingToGithub] = useState(false);
+  const [isPullingFromGithub, setIsPullingFromGithub] = useState(false);
+  const [isRestoringFile, setIsRestoringFile] = useState(false);
+
+  // Test Server connection on mount
+  useEffect(() => {
+    const checkServer = async () => {
+      try {
+        const res = await fetch(buildApiUrl('/api/health'), { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+          setServerStatus('connected');
+        } else {
+          setServerStatus('disconnected');
+        }
+      } catch {
+        setServerStatus('disconnected');
+      }
+    };
+    checkServer();
+  }, []);
+
+  // Save GitHub Config handler
+  const handleSaveGithubConfig = () => {
+    const updated = saveGithubConfig({
+      repo: githubRepoInput.trim(),
+      branch: githubBranchInput.trim(),
+      token: githubTokenInput.trim(),
+      autoSync: isAutoSyncEnabled,
+    });
+    setGhConfig(updated);
+    onFeedback('success', 'Đã lưu cấu hình GitHub thành công!');
+  };
+
+  // Test GitHub Connection handler
+  const handleTestGithub = async () => {
+    handleSaveGithubConfig();
+    setIsTestingGithub(true);
+    setGithubTestResult(null);
+
+    const result = await testGithubConnection();
+    setIsTestingGithub(false);
+    setGithubTestResult(result);
+
+    if (result.success) {
+      onFeedback('success', result.message);
+    } else {
+      onFeedback('error', result.message);
+    }
+  };
+
+  // Push ALL current data to GitHub
+  const handlePushAllToGithub = async () => {
+    if (!githubTokenInput.trim()) {
+      onFeedback('error', 'Vui lòng nhập GitHub Personal Access Token để có quyền ghi dữ liệu lên repository.');
+      return;
+    }
+
+    setIsSyncingToGithub(true);
+    try {
+      handleSaveGithubConfig();
+      const stories = getStoredStories();
+      const rawChapters = getLiveChaptersRuntimeCache();
+      const fullChapters: Record<string, Chapter[]> = {};
+      stories.forEach((s) => {
+        fullChapters[s.id] = rawChapters[s.id] || getStoryChapters(s.id) || [];
+      });
+
+      let announcements: Announcement[] = ANNOUNCEMENTS;
+      try {
+        const raw = localStorage.getItem('mel_published_announcements');
+        if (raw) announcements = JSON.parse(raw);
+      } catch {}
+
+      // 1. Stories
+      const resStories = await commitGithubDataFile('stories.json', stories, 'Đồng bộ toàn bộ danh sách truyện [skip ci]');
+      if (!resStories.success) throw new Error(`Lỗi cập nhật stories.json: ${resStories.error}`);
+
+      // 2. Chapters
+      const resChapters = await commitGithubDataFile('chapters.json', fullChapters, 'Đồng bộ toàn bộ các chương truyện [skip ci]');
+      if (!resChapters.success) throw new Error(`Lỗi cập nhật chapters.json: ${resChapters.error}`);
+
+      // 3. Announcements
+      await commitGithubDataFile('announcements.json', announcements, 'Đồng bộ thông báo [skip ci]');
+
+      onFeedback('success', 'Đã đồng bộ thành công toàn bộ Truyện, Chương và Thông báo lên GitHub repository!');
+    } catch (err: any) {
+      onFeedback('error', err?.message || 'Có lỗi xảy ra khi đẩy dữ liệu lên GitHub');
+    } finally {
+      setIsSyncingToGithub(false);
+    }
+  };
+
+  // Pull latest data from GitHub
+  const handlePullFromGithub = async () => {
+    setIsPullingFromGithub(true);
+    try {
+      const [remoteStories, remoteChapters, remoteAnnouncements] = await Promise.all([
+        fetchRawGithubJson<Story[]>('stories.json'),
+        fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json'),
+        fetchRawGithubJson<Announcement[]>('announcements.json'),
+      ]);
+
+      let updatedCount = 0;
+      if (Array.isArray(remoteStories) && remoteStories.length > 0) {
+        localStorage.setItem('mel_published_stories', JSON.stringify(remoteStories));
+        updatedCount += remoteStories.length;
+      }
+
+      if (remoteChapters && typeof remoteChapters === 'object') {
+        for (const [storyId, chList] of Object.entries(remoteChapters)) {
+          if (Array.isArray(chList)) {
+            localStorage.setItem(`mel_chapters_${storyId}`, JSON.stringify(chList));
+          }
+        }
+      }
+
+      if (Array.isArray(remoteAnnouncements) && remoteAnnouncements.length > 0) {
+        localStorage.setItem('mel_published_announcements', JSON.stringify(remoteAnnouncements));
+      }
+
+      onFeedback('success', `Đã kéo thành công dữ liệu từ GitHub (${updatedCount} truyện)! Đang làm mới giao diện...`);
+      if (onRefreshAllData) onRefreshAllData();
+      setTimeout(() => {
+        window.location.reload();
+      }, 900);
+    } catch (err: any) {
+      onFeedback('error', 'Không thể kéo dữ liệu từ GitHub: ' + (err?.message || err));
+    } finally {
+      setIsPullingFromGithub(false);
+    }
+  };
+
+  // Import JSON backup file
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string) as MellifluousFullBackup;
+        const result = restoreFromBackup(json);
+        onFeedback(
+          'success',
+          `Khôi phục thành công: ${result.storiesCount} truyện, ${result.chaptersCount} chương và ${result.announcementsCount} thông báo!`
+        );
+        setTimeout(() => {
+          window.location.reload();
+        }, 1200);
+      } catch (err: any) {
+        onFeedback('error', 'Tệp sao lưu không hợp lệ: ' + (err?.message || err));
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Overview Notice */}
+      <div className="p-4 sm:p-5 rounded-2xl bg-pink-50/80 dark:bg-stone-800/80 border border-pink-200/80 dark:border-stone-700 space-y-2.5 shadow-2xs">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-xl bg-pink-100 dark:bg-stone-700 text-pink-700 dark:text-pink-300 shrink-0">
+            <Database className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="font-serif text-base font-bold text-stone-850 dark:text-stone-100">
+              Giải pháp Lưu trữ & Đồng bộ Dữ liệu Độc lập
+            </h3>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed mt-1">
+              Do Firestore cũ đã hết hạn mức Quota miễn phí, hệ thống hiện được tối ưu để hoạt động trực tiếp qua{' '}
+              <strong className="text-pink-600 dark:text-pink-400 font-semibold">GitHub Repository</strong> và{' '}
+              <strong className="text-stone-800 dark:text-stone-200 font-semibold">Máy chủ Server Node.js/Express</strong>.
+              Đảm bảo 100% miễn phí vĩnh viễn, không bị giới hạn gói Blaze, không bao giờ bị lệch dữ liệu hay mất chương truyện.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* STORAGE ENGINES GRID */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Card 1: GitHub Pages & Repository */}
+        <div className="p-4 rounded-2xl bg-white dark:bg-stone-850 border border-stone-200 dark:border-stone-700 space-y-3 flex flex-col justify-between shadow-2xs">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Github className="w-4 h-4 text-stone-800 dark:text-stone-200" />
+                <span className="font-serif text-sm font-bold text-stone-800 dark:text-stone-100">
+                  GitHub Repository
+                </span>
+              </div>
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                  githubTokenInput
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                    : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                }`}
+              >
+                {githubTokenInput ? 'Đã có Token' : 'Chưa có Token'}
+              </span>
+            </div>
+            <p className="text-xs text-stone-500 dark:text-stone-400">
+              Lưu trực tiếp vào repository GitHub. Độc giả đọc từ GitHub Raw CDN siêu nhanh và không giới hạn.
+            </p>
+          </div>
+          <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-400">
+            <span>Repo: <code className="text-pink-600 dark:text-pink-400">{githubRepoInput.split('/')[1] || githubRepoInput}</code></span>
+            <span className="text-emerald-600 font-medium">Khuyên dùng</span>
+          </div>
+        </div>
+
+        {/* Card 2: Server API */}
+        <div className="p-4 rounded-2xl bg-white dark:bg-stone-850 border border-stone-200 dark:border-stone-700 space-y-3 flex flex-col justify-between shadow-2xs">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Server className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                <span className="font-serif text-sm font-bold text-stone-800 dark:text-stone-100">
+                  Server Backend
+                </span>
+              </div>
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                  serverStatus === 'connected'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                    : 'bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-400'
+                }`}
+              >
+                {serverStatus === 'connected' ? 'Đang kết nối' : 'Ngoại tuyến / Tĩnh'}
+              </span>
+            </div>
+            <p className="text-xs text-stone-500 dark:text-stone-400">
+              Node.js Express backend lưu trữ trực tiếp vào các tệp JSON trong thư mục /data trên máy chủ.
+            </p>
+          </div>
+          <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-400">
+            <span>Tệp: <code className="text-sky-600 dark:text-sky-400">data/*.json</code></span>
+            <span>{serverStatus === 'connected' ? 'Port 3000' : 'GitHub Pages Mode'}</span>
+          </div>
+        </div>
+
+        {/* Card 3: Firebase Firestore */}
+        <div className="p-4 rounded-2xl bg-white dark:bg-stone-850 border border-stone-200 dark:border-stone-700 space-y-3 flex flex-col justify-between shadow-2xs">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Flame className="w-4 h-4 text-amber-500" />
+                <span className="font-serif text-sm font-bold text-stone-800 dark:text-stone-100">
+                  Firestore
+                </span>
+              </div>
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                  firestoreActive
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                    : 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300'
+                }`}
+              >
+                {firestoreActive ? 'Đang bật' : 'Tạm tắt (Hết Quota)'}
+              </span>
+            </div>
+            <p className="text-xs text-stone-500 dark:text-stone-400">
+              Project Firestore cũ đã chạm ngưỡng hạn mức. Đã ngắt kết nối để website tải trơn tru, không báo lỗi mạng.
+            </p>
+          </div>
+          <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-400">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !firestoreActive;
+                setFirestoreActive(next);
+                setFirestoreEnabled(next);
+                onFeedback(
+                  next ? 'success' : 'error',
+                  next ? 'Đã kích hoạt lại Firestore' : 'Đã ngắt Firestore (chạy chế độ GitHub/Server an toàn)'
+                );
+              }}
+              className="text-pink-600 hover:underline cursor-pointer font-medium"
+            >
+              {firestoreActive ? 'Bấm để tắt Firestore' : 'Bấm để bật lại'}
+            </button>
+            <span className="text-stone-400">Tùy chọn</span>
+          </div>
+        </div>
+      </div>
+
+      {/* GITHUB REPOSITORY CONFIGURATION SECTION */}
+      <div className="p-5 sm:p-6 rounded-2xl bg-stone-50/70 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-700 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h4 className="font-serif text-base font-bold text-stone-850 dark:text-stone-100 flex items-center gap-2">
+              <Github className="w-5 h-5 text-stone-800 dark:text-stone-100" />
+              <span>Cấu hình Đồng bộ Tự động với GitHub Pages</span>
+            </h4>
+            <p className="text-xs text-stone-600 dark:text-stone-300 mt-0.5">
+              Nhập Personal Access Token (PAT) để mỗi khi bạn Đăng truyện, Đăng chương hay Sửa đổi, dữ liệu sẽ được commit thẳng vào repository.
+            </p>
+          </div>
+
+          <a
+            href="https://github.com/settings/tokens/new?scopes=repo&description=Mellifluous%20Blog%20Sync"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-200/80 dark:bg-stone-700 hover:bg-stone-300 dark:hover:bg-stone-600 text-stone-800 dark:text-stone-100 text-xs font-semibold shrink-0 cursor-pointer transition-colors"
+          >
+            <span>Lấy GitHub Token trong 30s</span>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Repository */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+              Kho lưu trữ GitHub (Owner/Repo)
+            </label>
+            <input
+              type="text"
+              value={githubRepoInput}
+              onChange={(e) => setGithubRepoInput(e.target.value)}
+              placeholder="maianhpham927-glitch/mellifluous"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-850 text-stone-800 dark:text-stone-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-pink-500/20 focus:border-pink-500"
+            />
+          </div>
+
+          {/* Branch */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+              Nhánh xuất bản (Branch)
+            </label>
+            <input
+              type="text"
+              value={githubBranchInput}
+              onChange={(e) => setGithubBranchInput(e.target.value)}
+              placeholder="main"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-850 text-stone-800 dark:text-stone-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-pink-500/20 focus:border-pink-500"
+            />
+          </div>
+        </div>
+
+        {/* Token Input */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold text-stone-700 dark:text-stone-300 flex items-center gap-1.5">
+              <KeyRound className="w-3.5 h-3.5 text-pink-600" />
+              <span>GitHub Personal Access Token (PAT)</span>
+            </label>
+            <span className="text-[11px] text-stone-500 dark:text-stone-400">
+              Yêu cầu quyền: <code className="text-pink-600 font-semibold">repo</code> hoặc <code className="text-pink-600 font-semibold">contents:write</code>
+            </span>
+          </div>
+
+          <div className="relative">
+            <input
+              type={showToken ? 'text' : 'password'}
+              value={githubTokenInput}
+              onChange={(e) => setGithubTokenInput(e.target.value)}
+              placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              className="w-full pr-10 pl-3.5 py-2.5 rounded-xl border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-850 text-stone-800 dark:text-stone-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-pink-500/20 focus:border-pink-500"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken(!showToken)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-pointer"
+            >
+              {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+          <p className="text-[11px] text-stone-500 dark:text-stone-400">
+            Token được lưu an toàn trong trình duyệt cục bộ của tác giả, không công khai cho độc giả.
+          </p>
+        </div>
+
+        {/* Auto Sync Toggle */}
+        <div className="flex items-center gap-3 pt-2">
+          <input
+            type="checkbox"
+            id="autoSyncToggle"
+            checked={isAutoSyncEnabled}
+            onChange={(e) => setIsAutoSyncEnabled(e.target.checked)}
+            className="w-4 h-4 rounded text-pink-600 focus:ring-pink-500 border-stone-300 dark:border-stone-600 cursor-pointer"
+          />
+          <label htmlFor="autoSyncToggle" className="text-xs text-stone-700 dark:text-stone-300 font-medium cursor-pointer">
+            Tự động commit lên GitHub mỗi khi xuất bản hoặc sửa đổi truyện/chương mới
+          </label>
+        </div>
+
+        {/* Buttons */}
+        <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-stone-200/80 dark:border-stone-700/80">
+          <button
+            type="button"
+            onClick={handleSaveGithubConfig}
+            className="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white text-xs font-bold cursor-pointer transition-colors shadow-2xs"
+          >
+            Lưu cấu hình GitHub
+          </button>
+
+          <button
+            type="button"
+            onClick={handleTestGithub}
+            disabled={isTestingGithub || !githubTokenInput.trim()}
+            className="px-4 py-2 rounded-xl bg-stone-200 dark:bg-stone-700 hover:bg-stone-300 dark:hover:bg-stone-600 text-stone-800 dark:text-stone-100 text-xs font-semibold cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1.5"
+          >
+            {isTestingGithub ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            )}
+            <span>Kiểm tra kết nối</span>
+          </button>
+
+          {githubTestResult && (
+            <span
+              className={`text-xs font-medium flex items-center gap-1.5 px-3 py-1.5 rounded-xl ${
+                githubTestResult.success
+                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                  : 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+              }`}
+            >
+              {githubTestResult.success ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+              <span>{githubTestResult.message}</span>
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* QUICK 1-CLICK SYNC & DATA TOOLS */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Box 1: Push & Pull GitHub */}
+        <div className="p-5 rounded-2xl bg-white dark:bg-stone-850 border border-stone-200 dark:border-stone-700 space-y-3.5 shadow-2xs">
+          <h4 className="font-serif text-sm font-bold text-stone-850 dark:text-stone-100 flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 text-pink-600" />
+            <span>Đồng bộ 1-Chạm với GitHub</span>
+          </h4>
+          <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
+            Dùng tính năng này để đẩy toàn bộ truyện, chương và dữ liệu hiện tại lên GitHub ngay lập tức, hoặc kéo bản mới nhất về nếu vừa có người cập nhật.
+          </p>
+          <div className="flex flex-wrap gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={handlePushAllToGithub}
+              disabled={isSyncingToGithub || !githubTokenInput.trim()}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shrink-0 cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1.5 shadow-2xs"
+            >
+              {isSyncingToGithub ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+              <span>Đẩy toàn bộ lên GitHub</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePullFromGithub}
+              disabled={isPullingFromGithub}
+              className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-stone-750 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-100 text-xs font-semibold shrink-0 cursor-pointer disabled:opacity-50 transition-colors flex items-center gap-1.5 border border-stone-200 dark:border-stone-700"
+            >
+              {isPullingFromGithub ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              <span>Kéo dữ liệu từ GitHub về</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Box 2: Offline Backup & Restore */}
+        <div className="p-5 rounded-2xl bg-white dark:bg-stone-850 border border-stone-200 dark:border-stone-700 space-y-3.5 shadow-2xs">
+          <h4 className="font-serif text-sm font-bold text-stone-850 dark:text-stone-100 flex items-center gap-2">
+            <Layers className="w-4 h-4 text-sky-600" />
+            <span>Sao lưu & Khôi phục Tệp Ngoại tuyến</span>
+          </h4>
+          <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
+            Xuất một tệp JSON duy nhất chứa toàn bộ các tác phẩm, từng chương dịch và thông báo để lưu trữ vào máy tính hoặc chuyển giao website.
+          </p>
+          <div className="flex flex-wrap gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={downloadBackupFile}
+              className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shrink-0 cursor-pointer transition-colors flex items-center gap-1.5 shadow-2xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Tải bản sao lưu (.json) về máy</span>
+            </button>
+
+            <label className="px-3.5 py-2 rounded-xl bg-stone-100 dark:bg-stone-750 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-100 text-xs font-semibold shrink-0 cursor-pointer transition-colors flex items-center gap-1.5 border border-stone-200 dark:border-stone-700">
+              <Upload className="w-3.5 h-3.5 text-stone-600 dark:text-stone-300" />
+              <span>Nhập tệp (.json) để phục hồi</span>
+              <input type="file" accept=".json" onChange={handleImportFile} className="hidden" />
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
