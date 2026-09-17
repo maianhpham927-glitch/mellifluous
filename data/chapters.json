@@ -21,6 +21,23 @@
       "isExtra": false,
       "extraNumber": 0,
       "partType": "main"
+    },
+    {
+      "id": "chao-tiep-ha-c2",
+      "storyId": "chao-tiep-ha",
+      "chapterNumber": 2,
+      "title": "ooi trời",
+      "publishedAt": "2026-09-17T16:22:53.734Z",
+      "updatedAt": "2026-09-17T16:22:53.735Z",
+      "isLocked": false,
+      "passwordHint": "",
+      "passwordKey": "",
+      "content": "troiwfkhaf khà tày",
+      "translatorNote": "",
+      "wordCount": 3,
+      "isExtra": false,
+      "extraNumber": 0,
+      "partType": "main"
     }
   ]
 }
