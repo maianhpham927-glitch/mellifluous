@@ -4,25 +4,71 @@
  * 2. GitHub Pages / static hosting with custom backend (VITE_BACKEND_URL or localStorage override)
  */
 
+/**
+ * Detects if the app is currently running on a static file host (e.g. GitHub Pages)
+ * where no co-located Node.js / Express server is running.
+ */
+export const isStaticHosting = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return (
+    host.endsWith('.github.io') ||
+    host.endsWith('.pages.dev') ||
+    host.endsWith('.netlify.app') ||
+    host.endsWith('.web.app') ||
+    host.endsWith('.firebaseapp.com')
+  );
+};
+
 export const getApiBaseUrl = (): string => {
   if (typeof window === 'undefined') return '';
 
   // 1. Environment variable if provided
   const envUrl = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) || '';
-  if (envUrl && typeof envUrl === 'string') {
-    return envUrl.replace(/\/+$/, '');
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().startsWith('http')) {
+    return envUrl.trim().replace(/\/+$/, '');
   }
 
   // 2. Custom backend override stored in localStorage if user set it
   try {
     const saved = localStorage.getItem('mel_backend_api_url');
-    if (saved && typeof saved === 'string' && saved.startsWith('http')) {
-      return saved.replace(/\/+$/, '');
+    if (saved && typeof saved === 'string' && saved.trim().startsWith('http')) {
+      return saved.trim().replace(/\/+$/, '');
     }
   } catch {}
 
   // 3. Default: relative path for same-origin proxy (Cloud Run, local dev, custom domain)
   return '';
+};
+
+export const saveCustomBackendUrl = (url: string): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    const trimmed = url.trim().replace(/\/+$/, '');
+    if (trimmed) {
+      localStorage.setItem('mel_backend_api_url', trimmed);
+    } else {
+      localStorage.removeItem('mel_backend_api_url');
+    }
+  } catch {}
+};
+
+/**
+ * Returns true if an active backend server is configured or expected:
+ * - Localhost / dev server
+ * - AI Studio / Cloud Run container
+ * - Explicit backend URL provided via VITE_BACKEND_URL or mel_backend_api_url
+ * Returns false on GitHub Pages or static hosts when no backend URL has been set.
+ */
+export const hasBackendServer = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const baseUrl = getApiBaseUrl();
+  if (baseUrl !== '') return true;
+  // If hosted on GitHub Pages or static host without an explicit external backend URL, NO server exists
+  if (isStaticHosting()) {
+    return false;
+  }
+  return true;
 };
 
 export const buildApiUrl = (path: string): string => {

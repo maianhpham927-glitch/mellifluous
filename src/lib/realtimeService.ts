@@ -33,7 +33,7 @@ import {
   setLiveStoryChapters,
   getLiveChaptersRuntimeCache,
 } from '../data/mockData';
-import { buildApiUrl } from './apiConfig';
+import { buildApiUrl, hasBackendServer } from './apiConfig';
 import { bgmEngine } from '../utils/audioPlayer';
 import { updateGenresFromRemote } from '../utils/genreManager';
 import { getGithubConfig, commitGithubDataFile, fetchRawGithubJson } from './githubSyncService';
@@ -246,6 +246,13 @@ const notifyAllChaptersSubscribers = (chaptersMap: Record<string, Chapter[]>) =>
   });
 };
 
+export const LEGACY_MOCK_STORY_IDS = new Set([
+  'mua-he-nam-ay',
+  'buc-thu-tinh-gui-may-troi',
+  'chiec-o-thang-bay',
+  'duoi-tan-cay-mua-ha',
+]);
+
 // In-memory & local-storage state helpers hoisted for immediate accessibility
 export const getStoredStories = (): Story[] => {
   try {
@@ -253,7 +260,10 @@ export const getStoredStories = (): Story[] => {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        const filtered = parsed.filter((s) => !LEGACY_MOCK_STORY_IDS.has(s.id));
+        if (filtered.length > 0) {
+          return filtered;
+        }
       }
     }
   } catch {}
@@ -389,7 +399,7 @@ export function notifyCommentSubscribers(storyId: string, comments?: RealtimeCom
 let sseInitialized = false;
 
 export const initServerRealtimeSync = () => {
-  if (typeof window === 'undefined' || sseInitialized) return;
+  if (typeof window === 'undefined' || sseInitialized || !hasBackendServer()) return;
   sseInitialized = true;
 
   // 1. Snapshot fetch from server API with smart merge
@@ -1204,7 +1214,7 @@ export const subscribeToComments = (
   activeCommentSubscribers.get(storyId)!.add(subObj);
 
   // 3. Fetch from Server API
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && hasBackendServer()) {
     fetch(buildApiUrl(`/api/comments?storyId=${encodeURIComponent(storyId)}`))
       .then((res) => (res.ok ? res.json() : null))
       .then((serverList: RealtimeComment[] | null) => {
@@ -1361,13 +1371,15 @@ export const postRealtimeComment = async (comment: {
   notifyCommentSubscribers(cleanComment.storyId, updated);
 
   // 2. Server API sync for cross-device broadcast
-  fetch(buildApiUrl('/api/comments'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cleanComment),
-  }).catch((apiErr) => {
-    console.warn('Server comments post warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl('/api/comments'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cleanComment),
+    }).catch((apiErr) => {
+      console.warn('Server comments post warning:', apiErr);
+    });
+  }
 
   // 3. Firestore persistence if available
   try {
@@ -1481,13 +1493,15 @@ export const postCommentReply = async (
   }
 
   // 2. Server API sync for cross-device broadcast
-  fetch(buildApiUrl(`/api/comments/${encodeURIComponent(commentId)}/reply`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reply: newReplyItem }),
-  }).catch((apiErr) => {
-    console.warn('Server comment reply post warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/comments/${encodeURIComponent(commentId)}/reply`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply: newReplyItem }),
+    }).catch((apiErr) => {
+      console.warn('Server comment reply post warning:', apiErr);
+    });
+  }
 
   // 3. Firestore persistence if available
   try {
@@ -1557,13 +1571,15 @@ export const toggleCommentLike = async (
   }
 
   // 2. Server API sync for cross-device broadcast
-  fetch(buildApiUrl(`/api/comments/${encodeURIComponent(commentId)}/like`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ visitorId }),
-  }).catch((apiErr) => {
-    console.warn('Server comment like warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/comments/${encodeURIComponent(commentId)}/like`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitorId }),
+    }).catch((apiErr) => {
+      console.warn('Server comment like warning:', apiErr);
+    });
+  }
 
   // 3. Firestore persistence if available
   try {
@@ -1694,11 +1710,13 @@ export const deleteComment = async (commentId: string): Promise<void> => {
   }
 
   // 2. Server API sync for cross-device broadcast
-  fetch(buildApiUrl(`/api/comments/${encodeURIComponent(commentId)}`), {
-    method: 'DELETE',
-  }).catch((apiErr) => {
-    console.warn('Server comment delete warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/comments/${encodeURIComponent(commentId)}`), {
+      method: 'DELETE',
+    }).catch((apiErr) => {
+      console.warn('Server comment delete warning:', apiErr);
+    });
+  }
 
   // 3. Firestore delete if available
   try {
@@ -1725,7 +1743,7 @@ export const subscribeToReaderLetters = (
   activeReaderLetterSubscribers.add(callback);
 
   // 3. Server API fetch
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && hasBackendServer()) {
     fetch(buildApiUrl('/api/letters'))
       .then((res) => (res.ok ? res.json() : null))
       .then((serverLetters) => {
@@ -1861,13 +1879,15 @@ export const sendReaderLetter = async (letter: {
   notifyReaderLetterSubscribers(updatedLetters);
 
   // 3. Server API sync for cross-device broadcast
-  fetch(buildApiUrl('/api/letters'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(newLetter),
-  }).catch((apiErr) => {
-    console.warn('Server reader letter post warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl('/api/letters'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newLetter),
+    }).catch((apiErr) => {
+      console.warn('Server reader letter post warning:', apiErr);
+    });
+  }
 
   // 4. Non-blocking asynchronous sync to Firestore
   try {
@@ -1921,13 +1941,15 @@ export const replyToReaderLetter = async (
   notifyReaderLetterSubscribers(updated);
 
   // Server API sync for cross-device broadcast
-  fetch(buildApiUrl(`/api/letters/${encodeURIComponent(letterId)}/reply`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ replyText, authorName }),
-  }).catch((apiErr) => {
-    console.warn('Server letter reply warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/letters/${encodeURIComponent(letterId)}/reply`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replyText, authorName }),
+    }).catch((apiErr) => {
+      console.warn('Server letter reply warning:', apiErr);
+    });
+  }
 
   try {
     const letterRef = doc(db, 'reader_letters', letterId);
@@ -1951,11 +1973,13 @@ export const deleteReaderLetter = async (letterId: string): Promise<void> => {
   notifyReaderLetterSubscribers(updated);
 
   // Server API sync for cross-device broadcast
-  fetch(buildApiUrl(`/api/letters/${encodeURIComponent(letterId)}`), {
-    method: 'DELETE',
-  }).catch((apiErr) => {
-    console.warn('Server letter delete warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/letters/${encodeURIComponent(letterId)}`), {
+      method: 'DELETE',
+    }).catch((apiErr) => {
+      console.warn('Server letter delete warning:', apiErr);
+    });
+  }
 
   try {
     await deleteDoc(doc(db, 'reader_letters', letterId)).catch((err) => {
@@ -1981,11 +2005,13 @@ export const toggleLetterLike = async (letterId: string): Promise<void> => {
   notifyReaderLetterSubscribers(updated);
 
   // Server API sync for cross-device broadcast
-  fetch(buildApiUrl(`/api/letters/${encodeURIComponent(letterId)}/like`), {
-    method: 'POST',
-  }).catch((apiErr) => {
-    console.warn('Server letter like warning:', apiErr);
-  });
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/letters/${encodeURIComponent(letterId)}/like`), {
+      method: 'POST',
+    }).catch((apiErr) => {
+      console.warn('Server letter like warning:', apiErr);
+    });
+  }
 
   try {
     const letterRef = doc(db, 'reader_letters', letterId);
@@ -2146,9 +2172,37 @@ const seedFirestoreBaselineIfEmpty = async () => {
       }
       await batch.commit();
       console.log('Successfully seeded initial stories and chapters to Firestore story_stats & chapter_stats!');
+    } else {
+      // If Firestore already has documents, clean up any legacy mock story documents
+      cleanupLegacyMockDataInFirestore();
     }
   } catch (err) {
     console.warn('Firestore baseline seed check warning:', err);
+  }
+};
+
+let hasCleanedLegacy = false;
+const cleanupLegacyMockDataInFirestore = async () => {
+  if (hasCleanedLegacy || checkIsFirestoreBlocked()) return;
+  hasCleanedLegacy = true;
+  try {
+    const legacyIds = ['mua-he-nam-ay', 'buc-thu-tinh-gui-may-troi', 'chiec-o-thang-bay', 'duoi-tan-cay-mua-ha'];
+    const batch = writeBatch(db);
+    for (const id of legacyIds) {
+      batch.delete(doc(db, 'story_stats', id));
+    }
+    batch.set(doc(db, 'site_stats', 'deleted_records'), {
+      storyIds: arrayUnion(...legacyIds),
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+    batch.set(doc(db, 'system_settings', 'deleted_stories'), {
+      ids: arrayUnion(...legacyIds),
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+    await batch.commit();
+    console.log('[Firestore] Cleaned up legacy mock stories from story_stats.');
+  } catch (err) {
+    console.warn('[Firestore] Legacy mock cleanup note:', err);
   }
 };
 
@@ -2181,55 +2235,42 @@ export const subscribeToPublishedStories = (
           if (raw) localDel = new Set(JSON.parse(raw));
         } catch {}
 
-        for (const s of incoming) {
-          if (localDel.has(s.id)) continue;
+        const cleanIncoming = incoming.filter((s) => !localDel.has(s.id) && !LEGACY_MOCK_STORY_IDS.has(s.id));
+        if (cleanIncoming.length === 0) return;
+
+        const updatedList: Story[] = [];
+        for (const s of cleanIncoming) {
           const existing = currentMap.get(s.id);
           if (!existing) {
-            currentMap.set(s.id, s);
-            changed = true;
+            updatedList.push(s);
           } else {
-            const existingTime = parseSafeTimestamp(existing.updatedAt);
-            const incomingTime = parseSafeTimestamp(s.updatedAt);
-            const isDifferent =
-              s.title !== existing.title ||
-              s.completedChapters !== existing.completedChapters ||
-              s.totalChapters !== existing.totalChapters ||
-              s.status !== existing.status ||
-              s.coverImage !== existing.coverImage ||
-              s.hasPassword !== existing.hasPassword ||
-              s.passwordKey !== existing.passwordKey ||
-              s.summary !== existing.summary;
-
-            if (incomingTime >= existingTime || isDifferent) {
-              currentMap.set(s.id, {
-                ...existing,
-                ...s,
-                views: Math.max(Number(existing.views) || 0, Number(s.views) || 0),
-                likes: Math.max(Number(existing.likes) || 0, Number(s.likes) || 0),
-                completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(s.completedChapters) || 0),
-              });
-              changed = true;
-            }
+            updatedList.push({
+              ...existing,
+              ...s,
+              views: Math.max(Number(existing.views) || 0, Number(s.views) || 0),
+              likes: Math.max(Number(existing.likes) || 0, Number(s.likes) || 0),
+              completedChapters: Math.max(Number(existing.completedChapters) || 0, Number(s.completedChapters) || 0),
+            });
           }
         }
-        if (changed) {
-          const merged = Array.from(currentMap.values());
-          try {
-            localStorage.setItem('mel_published_stories', JSON.stringify(merged));
-          } catch {}
-          callback(merged);
-          notifyStorySubscribers(merged);
-        }
+
+        try {
+          localStorage.setItem('mel_published_stories', JSON.stringify(updatedList));
+        } catch {}
+        callback(updatedList);
+        notifyStorySubscribers(updatedList);
       };
 
-      fetch(buildApiUrl('/api/stories'))
-        .then((res) => (res.ok ? res.json() : null))
-        .then((serverStories) => {
-          if (Array.isArray(serverStories) && serverStories.length > 0) {
-            applyStories(serverStories);
-          }
-        })
-        .catch(() => {});
+      if (hasBackendServer()) {
+        fetch(buildApiUrl('/api/stories'))
+          .then((res) => (res.ok ? res.json() : null))
+          .then((serverStories) => {
+            if (Array.isArray(serverStories) && serverStories.length > 0) {
+              applyStories(serverStories);
+            }
+          })
+          .catch(() => {});
+      }
 
       fetchRawGithubJson<Story[]>('stories.json')
         .then((ghStories) => {
@@ -2241,7 +2282,7 @@ export const subscribeToPublishedStories = (
     };
 
     syncRemoteStories();
-    pollInterval = setInterval(syncRemoteStories, 30000);
+    pollInterval = setInterval(syncRemoteStories, 10000);
   }
 
   // 4. Connect to Firestore story_stats if quota is healthy
@@ -2294,7 +2335,7 @@ export const subscribeToPublishedStories = (
           snapshot.forEach((d) => {
             const item = d.data() as any;
             const sId = item.id || item.storyId || d.id;
-            if (item.deleted || cloudDeletedIds.has(sId) || localDeletedIds.has(sId)) {
+            if (item.deleted || cloudDeletedIds.has(sId) || localDeletedIds.has(sId) || LEGACY_MOCK_STORY_IDS.has(sId)) {
               cloudDeletedIds.add(sId);
               seenIds.add(sId);
               return;
@@ -2342,14 +2383,14 @@ export const subscribeToPublishedStories = (
 
           // Ensure any local author-created stories not in Firestore yet and not deleted are retained
           currentStored.forEach((stored) => {
-            if (!seenIds.has(stored.id) && !cloudDeletedIds.has(stored.id) && !localDeletedIds.has(stored.id)) {
+            if (!seenIds.has(stored.id) && !cloudDeletedIds.has(stored.id) && !localDeletedIds.has(stored.id) && !LEGACY_MOCK_STORY_IDS.has(stored.id)) {
               list.push(stored);
               seenIds.add(stored.id);
             }
           });
 
           STORIES.forEach((base) => {
-            if (!seenIds.has(base.id) && !cloudDeletedIds.has(base.id) && !localDeletedIds.has(base.id)) {
+            if (!seenIds.has(base.id) && !cloudDeletedIds.has(base.id) && !localDeletedIds.has(base.id) && !LEGACY_MOCK_STORY_IDS.has(base.id)) {
               list.push(base);
               seenIds.add(base.id);
             }
@@ -2679,14 +2720,16 @@ export const subscribeToAllChapters = (
         }
       };
 
-      fetch(buildApiUrl('/api/chapters'))
-        .then((res) => (res.ok ? res.json() : null))
-        .then((chaptersMap) => {
-          if (chaptersMap && typeof chaptersMap === 'object' && Object.keys(chaptersMap).length > 0) {
-            applyChaptersMap(chaptersMap);
-          }
-        })
-        .catch(() => {});
+      if (hasBackendServer()) {
+        fetch(buildApiUrl('/api/chapters'))
+          .then((res) => (res.ok ? res.json() : null))
+          .then((chaptersMap) => {
+            if (chaptersMap && typeof chaptersMap === 'object' && Object.keys(chaptersMap).length > 0) {
+              applyChaptersMap(chaptersMap);
+            }
+          })
+          .catch(() => {});
+      }
 
       fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
         .then((ghMap) => {
@@ -2825,25 +2868,69 @@ export const subscribeToStoryChapters = (
     activeChapterSubscribers.get(aliasId)!.add(callback);
   }
 
-  // 3. Immediately query Server API for real-time consistency across devices
+  // 3. Immediately query Server API with GitHub fallback for real-time consistency across devices
   if (typeof window !== 'undefined') {
-    fetch(`/api/chapters?storyId=${encodeURIComponent(storyId)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((serverList) => {
-        if (Array.isArray(serverList) && serverList.length > 0) {
-          const currentList = getStoryChapters(storyId);
-          const merged = mergeChapters(currentList, serverList);
-          setLiveStoryChapters(storyId, merged);
-          try {
-            localStorage.setItem(`mel_chapters_${storyId}`, JSON.stringify(merged));
-            if (aliasId) localStorage.setItem(`mel_chapters_${aliasId}`, JSON.stringify(merged));
-          } catch {}
-          callback(merged);
-          notifyChapterSubscribers(storyId, merged);
-          if (aliasId) notifyChapterSubscribers(aliasId, merged);
-        }
-      })
-      .catch(() => {});
+    const handleIncomingChapters = (incoming: Chapter[]) => {
+      if (Array.isArray(incoming) && incoming.length > 0) {
+        const currentList = getStoryChapters(storyId);
+        const merged = mergeChapters(currentList, incoming);
+        setLiveStoryChapters(storyId, merged);
+        try {
+          localStorage.setItem(`mel_chapters_${storyId}`, JSON.stringify(merged));
+          if (aliasId) localStorage.setItem(`mel_chapters_${aliasId}`, JSON.stringify(merged));
+        } catch {}
+        callback(merged);
+        notifyChapterSubscribers(storyId, merged);
+        if (aliasId) notifyChapterSubscribers(aliasId, merged);
+      }
+    };
+
+    if (hasBackendServer()) {
+      fetch(buildApiUrl(`/api/chapters?storyId=${encodeURIComponent(storyId)}`))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((serverList) => {
+          if (Array.isArray(serverList) && serverList.length > 0) {
+            handleIncomingChapters(serverList);
+          } else {
+            // Fallback to GitHub raw JSON
+            fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+              .then((allChapters) => {
+                if (allChapters) {
+                  const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
+                  if (Array.isArray(list) && list.length > 0) {
+                    handleIncomingChapters(list);
+                  }
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {
+          // Fallback to GitHub raw JSON on network error
+          fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+            .then((allChapters) => {
+              if (allChapters) {
+                const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
+                if (Array.isArray(list) && list.length > 0) {
+                  handleIncomingChapters(list);
+                }
+              }
+            })
+            .catch(() => {});
+        });
+    } else {
+      // Direct GitHub Raw JSON fallback on static hosting without custom backend
+      fetchRawGithubJson<Record<string, Chapter[]>>('chapters.json')
+        .then((allChapters) => {
+          if (allChapters) {
+            const list = allChapters[storyId] || (aliasId ? allChapters[aliasId] : null);
+            if (Array.isArray(list) && list.length > 0) {
+              handleIncomingChapters(list);
+            }
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   // 4. Connect to Firestore query on chapter_stats if quota is healthy
@@ -3196,15 +3283,29 @@ export const subscribeToAnnouncements = (
   let pollAnnInterval: any = null;
   if (typeof window !== 'undefined') {
     const syncAnnouncements = () => {
-      fetch(buildApiUrl('/api/announcements'))
-        .then((res) => (res.ok ? res.json() : null))
-        .then((serverAnn) => {
-          if (Array.isArray(serverAnn) && serverAnn.length > 0) {
-            try {
-              localStorage.setItem('mel_announcements', JSON.stringify(serverAnn));
-            } catch {}
-            callback(serverAnn);
-          } else {
+      if (hasBackendServer()) {
+        fetch(buildApiUrl('/api/announcements'))
+          .then((res) => (res.ok ? res.json() : null))
+          .then((serverAnn) => {
+            if (Array.isArray(serverAnn) && serverAnn.length > 0) {
+              try {
+                localStorage.setItem('mel_announcements', JSON.stringify(serverAnn));
+              } catch {}
+              callback(serverAnn);
+            } else {
+              fetchRawGithubJson<Announcement[]>('announcements.json')
+                .then((ghAnn) => {
+                  if (Array.isArray(ghAnn) && ghAnn.length > 0) {
+                    try {
+                      localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
+                    } catch {}
+                    callback(ghAnn);
+                  }
+                })
+                .catch(() => {});
+            }
+          })
+          .catch(() => {
             fetchRawGithubJson<Announcement[]>('announcements.json')
               .then((ghAnn) => {
                 if (Array.isArray(ghAnn) && ghAnn.length > 0) {
@@ -3215,20 +3316,19 @@ export const subscribeToAnnouncements = (
                 }
               })
               .catch(() => {});
-          }
-        })
-        .catch(() => {
-          fetchRawGithubJson<Announcement[]>('announcements.json')
-            .then((ghAnn) => {
-              if (Array.isArray(ghAnn) && ghAnn.length > 0) {
-                try {
-                  localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
-                } catch {}
-                callback(ghAnn);
-              }
-            })
-            .catch(() => {});
-        });
+          });
+      } else {
+        fetchRawGithubJson<Announcement[]>('announcements.json')
+          .then((ghAnn) => {
+            if (Array.isArray(ghAnn) && ghAnn.length > 0) {
+              try {
+                localStorage.setItem('mel_announcements', JSON.stringify(ghAnn));
+              } catch {}
+              callback(ghAnn);
+            }
+          })
+          .catch(() => {});
+      }
     };
 
     syncAnnouncements();

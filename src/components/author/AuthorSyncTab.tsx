@@ -46,7 +46,7 @@ import {
   isFirestoreEnabled,
   setFirestoreEnabled,
 } from '../../lib/firebase';
-import { getApiBaseUrl, buildApiUrl } from '../../lib/apiConfig';
+import { getApiBaseUrl, buildApiUrl, hasBackendServer, isStaticHosting, saveCustomBackendUrl } from '../../lib/apiConfig';
 import { Story, Chapter, Announcement } from '../../types';
 
 interface AuthorSyncTabProps {
@@ -104,9 +104,13 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
     setGhConfig(updated);
   }, [githubRepoInput, githubBranchInput, githubTokenInput, isAutoSyncEnabled]);
 
-  // Test Server connection on mount
+  // Test Server connection on mount or when customBackendUrl changes
   useEffect(() => {
     const checkServer = async () => {
+      if (!hasBackendServer()) {
+        setServerStatus('disconnected');
+        return;
+      }
       try {
         const res = await fetch(buildApiUrl('/api/health'), { signal: AbortSignal.timeout(3000) });
         if (res.ok) {
@@ -119,7 +123,19 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
       }
     };
     checkServer();
-  }, []);
+  }, [customBackendUrl]);
+
+  // Save Custom Backend URL handler
+  const handleSaveBackendUrl = (newUrl: string) => {
+    const trimmed = newUrl.trim();
+    saveCustomBackendUrl(trimmed);
+    setCustomBackendUrl(trimmed);
+    if (trimmed) {
+      onFeedback('success', `Đã cấu hình máy chủ ngoài: ${trimmed}. Đang kiểm tra kết nối...`);
+    } else {
+      onFeedback('success', 'Đã chuyển về chế độ Tĩnh (GitHub Raw CDN) – Triệt tiêu hoàn toàn lỗi 404!');
+    }
+  };
 
   // Save GitHub Config handler
   const handleSaveGithubConfig = () => {
@@ -342,19 +358,25 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
                 className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
                   serverStatus === 'connected'
                     ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
-                    : 'bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-400'
+                    : 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300'
                 }`}
               >
-                {serverStatus === 'connected' ? 'Đang kết nối' : 'Ngoại tuyến / Tĩnh'}
+                {serverStatus === 'connected'
+                  ? 'Đang kết nối'
+                  : isStaticHosting() && !customBackendUrl
+                  ? 'GitHub Pages Tĩnh (Không 404)'
+                  : 'Ngoại tuyến / Tĩnh'}
               </span>
             </div>
             <p className="text-xs text-stone-500 dark:text-stone-400">
-              Node.js Express backend lưu trữ trực tiếp vào các tệp JSON trong thư mục /data trên máy chủ.
+              {serverStatus === 'connected'
+                ? 'Node.js Express backend đang kết nối trực tiếp, phản hồi REST và SSE tức thì.'
+                : 'Đang chạy ở chế độ tĩnh. Ứng dụng tự động chuyển sang đọc GitHub Raw CDN và Firestore, triệt tiêu 100% lỗi 404 trên console.'}
             </p>
           </div>
           <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-400">
             <span>Tệp: <code className="text-sky-600 dark:text-sky-400">data/*.json</code></span>
-            <span>{serverStatus === 'connected' ? 'Port 3000' : 'GitHub Pages Mode'}</span>
+            <span>{serverStatus === 'connected' ? (getApiBaseUrl() ? 'Cloud Run / Ext' : 'Port 3000') : 'GitHub CDN Mode'}</span>
           </div>
         </div>
 
@@ -576,6 +598,57 @@ export const AuthorSyncTab: React.FC<AuthorSyncTabProps> = ({ onFeedback, onRefr
                 </a>
               )}
             </span>
+          )}
+        </div>
+      </div>
+
+      {/* OPTIONAL: EXTERNAL BACKEND SERVER CONFIG FOR GITHUB PAGES */}
+      <div className="p-5 rounded-2xl bg-white dark:bg-stone-850 border border-stone-200 dark:border-stone-700 space-y-3.5 shadow-2xs">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Server className="w-4 h-4 text-sky-600" />
+            <h4 className="font-serif text-sm font-bold text-stone-850 dark:text-stone-100">
+              Máy chủ Node.js Backend (Tùy chọn)
+            </h4>
+          </div>
+          <span
+            className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+              serverStatus === 'connected'
+                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                : 'bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-400'
+            }`}
+          >
+            {serverStatus === 'connected' ? 'Đã kết nối' : 'Đang dùng GitHub Raw CDN'}
+          </span>
+        </div>
+
+        <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
+          Khi chạy trên GitHub Pages (môi trường tĩnh), trang web mặc định đọc trực tiếp qua <strong className="text-pink-600 dark:text-pink-400 font-semibold">GitHub Raw CDN</strong> và Firestore mà không cần máy chủ riêng — <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">triệt tiêu hoàn toàn các lỗi 404 trên console</strong>. Nếu bạn có triển khai máy chủ Node.js/Express riêng (như Cloud Run hoặc Render), bạn có thể nhập URL bên dưới:
+        </p>
+
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+          <input
+            type="url"
+            value={customBackendUrl}
+            onChange={(e) => setCustomBackendUrl(e.target.value)}
+            placeholder="Ví dụ: https://ais-dev-xpfqzcdrliylp5uqtd4pka-226890628857.asia-east1.run.app"
+            className="flex-1 px-3 py-2 rounded-xl bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-850 dark:text-stone-100 focus:outline-hidden focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
+          />
+          <button
+            type="button"
+            onClick={() => handleSaveBackendUrl(customBackendUrl)}
+            className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shrink-0 cursor-pointer transition-colors shadow-2xs"
+          >
+            Lưu URL
+          </button>
+          {customBackendUrl && (
+            <button
+              type="button"
+              onClick={() => handleSaveBackendUrl('')}
+              className="px-3 py-2 rounded-xl bg-stone-100 dark:bg-stone-750 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 text-xs font-semibold shrink-0 cursor-pointer transition-colors border border-stone-200 dark:border-stone-700"
+            >
+              Về Chế độ Tĩnh (Không 404)
+            </button>
           )}
         </div>
       </div>

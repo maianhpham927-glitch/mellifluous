@@ -1,5 +1,5 @@
 import { db, doc, getDoc, setDoc, onSnapshot, isFirestoreQuotaExhausted } from '../lib/firebase';
-import { buildApiUrl } from '../lib/apiConfig';
+import { buildApiUrl, hasBackendServer } from '../lib/apiConfig';
 import { fetchRawGithubJson } from '../lib/githubSyncService';
 
 export const DEFAULT_GENRES: string[] = [
@@ -66,26 +66,34 @@ export const updateGenresFromRemote = (list: string[]) => {
 
 // Initial Remote sync (Server REST + GitHub Raw fallback)
 if (typeof window !== 'undefined') {
-  fetch(buildApiUrl('/api/genres'))
-    .then((r) => (r.ok ? r.json() : null))
-    .then((list) => {
-      if (Array.isArray(list) && list.length > 0) {
-        saveLocal(list);
-      } else {
+  if (hasBackendServer()) {
+    fetch(buildApiUrl('/api/genres'))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((list) => {
+        if (Array.isArray(list) && list.length > 0) {
+          saveLocal(list);
+        } else {
+          fetchRawGithubJson<string[]>('genres.json').then((ghList) => {
+            if (Array.isArray(ghList) && ghList.length > 0) {
+              saveLocal(ghList);
+            }
+          }).catch(() => {});
+        }
+      })
+      .catch(() => {
         fetchRawGithubJson<string[]>('genres.json').then((ghList) => {
           if (Array.isArray(ghList) && ghList.length > 0) {
             saveLocal(ghList);
           }
         }).catch(() => {});
+      });
+  } else {
+    fetchRawGithubJson<string[]>('genres.json').then((ghList) => {
+      if (Array.isArray(ghList) && ghList.length > 0) {
+        saveLocal(ghList);
       }
-    })
-    .catch(() => {
-      fetchRawGithubJson<string[]>('genres.json').then((ghList) => {
-        if (Array.isArray(ghList) && ghList.length > 0) {
-          saveLocal(ghList);
-        }
-      }).catch(() => {});
-    });
+    }).catch(() => {});
+  }
 }
 
 // Initial Firestore sync using site_stats (only if not quota exhausted)
@@ -136,11 +144,13 @@ export const addGenre = async (newGenre: string): Promise<{ success: boolean; me
   saveLocal(updated);
 
   // Sync to Server API
-  fetch(buildApiUrl('/api/genres'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ genre: trimmed }),
-  }).catch(() => {});
+  if (hasBackendServer()) {
+    fetch(buildApiUrl('/api/genres'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ genre: trimmed }),
+    }).catch(() => {});
+  }
 
   if (db) {
     try {
@@ -165,9 +175,11 @@ export const deleteGenre = async (genreToDelete: string): Promise<{ success: boo
   saveLocal(updated);
 
   // Sync to Server API
-  fetch(buildApiUrl(`/api/genres/${encodeURIComponent(genreToDelete)}`), {
-    method: 'DELETE',
-  }).catch(() => {});
+  if (hasBackendServer()) {
+    fetch(buildApiUrl(`/api/genres/${encodeURIComponent(genreToDelete)}`), {
+      method: 'DELETE',
+    }).catch(() => {});
+  }
 
   if (db) {
     try {
@@ -184,11 +196,13 @@ export const resetGenresToDefault = async (): Promise<void> => {
   const reset = [...DEFAULT_GENRES];
   saveLocal(reset);
 
-  fetch(buildApiUrl('/api/genres'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ genres: reset }),
-  }).catch(() => {});
+  if (hasBackendServer()) {
+    fetch(buildApiUrl('/api/genres'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ genres: reset }),
+    }).catch(() => {});
+  }
 
   if (db) {
     try {

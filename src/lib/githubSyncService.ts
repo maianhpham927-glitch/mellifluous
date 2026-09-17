@@ -144,32 +144,43 @@ export async function fetchRawGithubJson<T>(filename: string): Promise<T | null>
     console.warn(`[GitHubSync] Could not fetch raw ${filename} from GitHub:`, err);
   }
 
-  // Fallback 1: Direct GitHub Contents API if token is configured
-  if (config.token) {
-    try {
-      const apiUrl = `https://api.github.com/repos/${repo}/contents/data/${filename}?ref=${encodeURIComponent(branch)}&_t=${cacheBuster}`;
-      const apiRes = await fetch(apiUrl, {
-        headers: {
-          Authorization: `Bearer ${config.token.trim()}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      });
-      if (apiRes.ok) {
-        const fileObj = await apiRes.json();
-        if (fileObj.content) {
-          const decoded = base64ToUtf8(fileObj.content);
-          return JSON.parse(decoded) as T;
-        }
+  // Fallback 1: Direct GitHub Contents API (works publicly for open repos, with or without token)
+  try {
+    const apiUrl = `https://api.github.com/repos/${repo}/contents/data/${filename}?ref=${encodeURIComponent(branch)}&_t=${cacheBuster}`;
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (config.token) {
+      headers.Authorization = `Bearer ${config.token.trim()}`;
+    }
+    const apiRes = await fetch(apiUrl, {
+      headers,
+      cache: 'no-store',
+    });
+    if (apiRes.ok) {
+      const fileObj = await apiRes.json();
+      if (fileObj.content) {
+        const decoded = base64ToUtf8(fileObj.content);
+        return JSON.parse(decoded) as T;
       }
-    } catch {}
-  }
+    }
+  } catch {}
 
-  // Fallback 2: Local /public/data/ or /data/ in deployed build
+  // Fallback 2: jsDelivr CDN
+  try {
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repo}@${branch}/data/${filename}?_t=${cacheBuster}`;
+    const cdnRes = await fetch(cdnUrl, { cache: 'no-store' });
+    if (cdnRes.ok) {
+      return await cdnRes.json();
+    }
+  } catch {}
+
+  // Fallback 3: Local /data/ or relative base path in deployed build
   try {
     const isGhActions = typeof window !== 'undefined' && window.location.pathname.includes('/mellifluous/');
     const localBasePath = isGhActions ? '/mellifluous/data/' : '/data/';
-    const localRes = await fetch(`${localBasePath}${filename}?_t=${cacheBuster}`);
+    const localRes = await fetch(`${localBasePath}${filename}?_t=${cacheBuster}`, { cache: 'no-store' });
     if (localRes.ok) {
       return await localRes.json();
     }

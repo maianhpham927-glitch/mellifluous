@@ -8,7 +8,7 @@
 
 import { db, doc, setDoc, deleteDoc, onSnapshot, collection, isFirestoreQuotaExhausted } from '../lib/firebase';
 import { saveAudioBlobToIDB, getAudioBlobFromIDB, deleteAudioBlobFromIDB } from './audioIndexedDB';
-import { buildApiUrl } from '../lib/apiConfig';
+import { buildApiUrl, hasBackendServer } from '../lib/apiConfig';
 import { fetchRawGithubJson } from '../lib/githubSyncService';
 import {
   uploadAudioToFirestore,
@@ -560,17 +560,19 @@ class BackgroundMusicEngine {
 
   public async pullServerPlaylist() {
     let loaded = false;
-    try {
-      const res = await fetch(buildApiUrl('/api/playlist'));
-      if (res.ok) {
-        const serverTracks = await res.json();
-        if (Array.isArray(serverTracks) && serverTracks.length > 0) {
-          this.mergeTracks(serverTracks);
-          loaded = true;
+    if (hasBackendServer()) {
+      try {
+        const res = await fetch(buildApiUrl('/api/playlist'));
+        if (res.ok) {
+          const serverTracks = await res.json();
+          if (Array.isArray(serverTracks) && serverTracks.length > 0) {
+            this.mergeTracks(serverTracks);
+            loaded = true;
+          }
         }
+      } catch (err) {
+        console.warn('Server playlist fetch note:', err);
       }
-    } catch (err) {
-      console.warn('Server playlist fetch note:', err);
     }
 
     if (!loaded) {
@@ -955,19 +957,22 @@ class BackgroundMusicEngine {
         reader.onerror = reject;
         reader.readAsDataURL(params.file);
       });
-      const uploadRes = await fetch(buildApiUrl('/api/upload-audio'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: params.file.name,
-          data: base64,
-          mimeType: params.file.type || 'audio/mpeg',
-        }),
-      });
-      if (uploadRes.ok) {
-        const json = await uploadRes.json();
-        if (json.url) {
-          serverPublicUrl = json.url;
+      let uploadRes: Response | null = null;
+      if (hasBackendServer()) {
+        uploadRes = await fetch(buildApiUrl('/api/upload-audio'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: params.file.name,
+            data: base64,
+            mimeType: params.file.type || 'audio/mpeg',
+          }),
+        });
+        if (uploadRes && uploadRes.ok) {
+          const json = await uploadRes.json();
+          if (json.url) {
+            serverPublicUrl = json.url;
+          }
         }
       }
     } catch (serverErr) {
@@ -1015,14 +1020,16 @@ class BackgroundMusicEngine {
     this.notify();
 
     // 4. Persist and broadcast to central server API
-    try {
-      await fetch(buildApiUrl('/api/playlist'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newTrack),
-      });
-    } catch (err) {
-      console.warn('Server playlist POST note:', err);
+    if (hasBackendServer()) {
+      try {
+        await fetch(buildApiUrl('/api/playlist'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newTrack),
+        });
+      } catch (err) {
+        console.warn('Server playlist POST note:', err);
+      }
     }
 
     // 5. Sync to Firestore if available
@@ -1057,14 +1064,16 @@ class BackgroundMusicEngine {
     this.notify();
 
     // Persist and broadcast to central server API
-    try {
-      await fetch(buildApiUrl('/api/playlist'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newTrack),
-      });
-    } catch (err) {
-      console.warn('Server playlist POST note:', err);
+    if (hasBackendServer()) {
+      try {
+        await fetch(buildApiUrl('/api/playlist'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newTrack),
+        });
+      } catch (err) {
+        console.warn('Server playlist POST note:', err);
+      }
     }
 
     try {
@@ -1100,14 +1109,16 @@ class BackgroundMusicEngine {
     }
 
     // Persist to central server API
-    try {
-      await fetch(buildApiUrl('/api/playlist'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(this.tracks),
-      });
-    } catch (err) {
-      console.warn('Server playlist PUT note:', err);
+    if (hasBackendServer()) {
+      try {
+        await fetch(buildApiUrl('/api/playlist'), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.tracks),
+        });
+      } catch (err) {
+        console.warn('Server playlist PUT note:', err);
+      }
     }
 
     try {
@@ -1144,12 +1155,14 @@ class BackgroundMusicEngine {
     }
 
     // Delete from central server API
-    try {
-      await fetch(buildApiUrl(`/api/playlist/${trackId}`), {
-        method: 'DELETE',
-      });
-    } catch (err) {
-      console.warn('Server playlist DELETE note:', err);
+    if (hasBackendServer()) {
+      try {
+        await fetch(buildApiUrl(`/api/playlist/${trackId}`), {
+          method: 'DELETE',
+        });
+      } catch (err) {
+        console.warn('Server playlist DELETE note:', err);
+      }
     }
 
     // Clean up cloud audio chunks from Firestore if it was an uploaded track

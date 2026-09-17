@@ -145,15 +145,78 @@ let cachedLetters: ReaderLetter[] = [];
 let cachedComments: RealtimeComment[] = [];
 let cachedGenres: string[] = [];
 
-// Helper to write JSON safely
+// Helper to write JSON safely and mirror to public/data
 const writeJsonSafe = (filePath: string, data: any) => {
   try {
     const tempFile = `${filePath}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
     fs.renameSync(tempFile, filePath);
+
+    // Also mirror to public/data so static file server / build always serves fresh data
+    const baseName = path.basename(filePath);
+    const publicPath = path.join(process.cwd(), 'public', 'data', baseName);
+    try {
+      const publicDir = path.dirname(publicPath);
+      if (!fs.existsSync(publicDir)) {
+        fs.mkdirSync(publicDir, { recursive: true });
+      }
+      fs.writeFileSync(publicPath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch {}
   } catch (err) {
     console.error(`Failed to write file ${filePath}:`, err);
   }
+};
+
+let lastStoriesMtime = 0;
+let lastChaptersMtime = 0;
+let lastAnnouncementsMtime = 0;
+
+const reloadStoriesIfChanged = () => {
+  try {
+    if (fs.existsSync(STORIES_FILE)) {
+      const stat = fs.statSync(STORIES_FILE);
+      if (stat.mtimeMs !== lastStoriesMtime) {
+        const content = fs.readFileSync(STORIES_FILE, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed)) {
+          cachedStories = parsed;
+          lastStoriesMtime = stat.mtimeMs;
+        }
+      }
+    }
+  } catch {}
+};
+
+const reloadChaptersIfChanged = () => {
+  try {
+    if (fs.existsSync(CHAPTERS_FILE)) {
+      const stat = fs.statSync(CHAPTERS_FILE);
+      if (stat.mtimeMs !== lastChaptersMtime) {
+        const content = fs.readFileSync(CHAPTERS_FILE, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object') {
+          cachedChapters = parsed;
+          lastChaptersMtime = stat.mtimeMs;
+        }
+      }
+    }
+  } catch {}
+};
+
+const reloadAnnouncementsIfChanged = () => {
+  try {
+    if (fs.existsSync(ANNOUNCEMENTS_FILE)) {
+      const stat = fs.statSync(ANNOUNCEMENTS_FILE);
+      if (stat.mtimeMs !== lastAnnouncementsMtime) {
+        const content = fs.readFileSync(ANNOUNCEMENTS_FILE, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed)) {
+          cachedAnnouncements = parsed;
+          lastAnnouncementsMtime = stat.mtimeMs;
+        }
+      }
+    }
+  } catch {}
 };
 
 // Initialize or load all entities
@@ -285,11 +348,13 @@ export const toSlug = (str: string = ''): string => {
 
 // Stories Operations
 export const getAllStories = (): Story[] => {
+  reloadStoriesIfChanged();
   return [...cachedStories];
 };
 
 export const getStoryById = (id: string): Story | undefined => {
   if (!id) return undefined;
+  reloadStoriesIfChanged();
   const decodedId = decodeURIComponent(id).trim();
   const slugId = toSlug(decodedId);
 
@@ -339,6 +404,7 @@ export const deleteStory = (storyId: string): boolean => {
 // Chapters Operations
 export const getChaptersByStory = (storyId: string): Chapter[] => {
   if (!storyId) return [];
+  reloadChaptersIfChanged();
   const decodedId = decodeURIComponent(storyId).trim();
   const directList = cachedChapters[decodedId] || cachedChapters[storyId];
   if (directList && directList.length > 0) return directList;
@@ -357,6 +423,7 @@ export const getChaptersByStory = (storyId: string): Chapter[] => {
 };
 
 export const getAllChaptersMap = (): Record<string, Chapter[]> => {
+  reloadChaptersIfChanged();
   return { ...cachedChapters };
 };
 
@@ -409,6 +476,7 @@ export const deleteChapter = (storyId: string, chapterId: string): boolean => {
 
 // Announcements Operations
 export const getAllAnnouncements = (): Announcement[] => {
+  reloadAnnouncementsIfChanged();
   return [...cachedAnnouncements];
 };
 
